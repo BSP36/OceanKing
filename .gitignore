@@ -69,3 +69,9 @@ MUJOCO_LOG.TXT
 # in .env.local, which takes precedence and is not committed.
 .env.local
 .claude/launch.json
+
+# OceanKing: local machine setup and course material, not part of the project
+/docker.sh
+/prepare.sh
+/archive/
+/theme.pdf
