@@ -3,6 +3,11 @@
 /prepare.sh
 /archive/
 /theme.pdf
+# Early concept notes, kept locally only
+/docs/PROPOSAL.md
+
+# Disposable experiments and outputs: anything here may be deleted at any time
+/scratch/
 
 # Python environment for the whole project (jumper/ is installed into it editable)
 /.venv/

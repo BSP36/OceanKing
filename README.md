@@ -1,7 +1,7 @@
 # OceanKing
 
 **A tiny crab. A big ocean.** Jumper, a 22-DoF crab robot, learns to walk on the seabed in
-simulation despite buoyancy and currents. See [`docs/PROPOSAL.md`](docs/PROPOSAL.md).
+simulation despite buoyancy and currents.
 
 ## Layout
 
@@ -9,6 +9,7 @@ simulation despite buoyancy and currents. See [`docs/PROPOSAL.md`](docs/PROPOSAL
 |---|---|
 | `jumper/` | The upstream [Jumper](https://github.com/KingKongRobotics/jumper) repository (Apache-2.0), merged with its history. Training, tasks and assets live here. |
 | `docs/` | OceanKing's own documents. |
+| `scratch/` | Disposable experiments and outputs (git-ignored; may be deleted at any time). |
 
 Upstream changes are merged into `jumper/` with:
 
