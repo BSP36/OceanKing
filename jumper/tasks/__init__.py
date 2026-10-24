@@ -86,3 +86,6 @@ __all__ = [
     "load_runner_cls",
     "load_export_media",
 ]
+
+# [oceanking] OceanKing's tasks: tasks/ocean is a symlink into /oceanking/tasks.
+from .ocean import posture  # noqa: F401,E402

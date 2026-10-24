@@ -1,0 +1,29 @@
+[project]
+name = "oceanking"
+version = "0.0.1"
+description = "Jumper, a crab robot, walking on the seabed in MuJoCo"
+requires-python = ">=3.10,<3.14"
+# Simulation dependencies come from upstream Jumper (`jumper/`), installed
+# editable into the same environment; see README.md.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["oceanking*"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["jumper", "scratch"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

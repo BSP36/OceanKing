@@ -150,3 +150,9 @@ __all__ = [
     "load_cli_args",
     "register",
 ]
+
+# [oceanking] OceanKing's scenes are symlinks into /oceanking/scenes; their
+# registrations live there too. See oceanking/plugin.py.
+from oceanking.plugin import register_scenes  # noqa: E402
+
+register_scenes()
