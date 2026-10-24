@@ -1,0 +1,229 @@
+{
+  "model": "jumper/assets/jumper/jumper.xml",
+  "model_sha256": "3342ca15a5bbcaf40e1f16dedb60044b91360dddae5f7f03f05eb3e6c830cf37",
+  "method": "convex hull of each link's group-1 collision mesh at HOME; overlap credited to the earlier body; Monte Carlo inside each hull",
+  "samples_per_link": 200000,
+  "seed": 0,
+  "total_mass_kg": 2.54296197,
+  "total_volume_m3": 0.0034238500014577137,
+  "sealed_buoyancy_ratio_fresh_water": 1.3464023614390561,
+  "torso_bounds_m": {
+    "min": [
+      -0.11154486204240528,
+      -0.09060567000255572,
+      -0.009000006874736302
+    ],
+    "max": [
+      0.09373361281089901,
+      0.09055757328000356,
+      0.06956958047718637
+    ]
+  },
+  "links": {
+    "base_link": {
+      "mass_kg": 0.886006,
+      "hull_volume_m3": 0.0012383974845860456,
+      "volume_m3": 0.0012383974845860456
+    },
+    "upper_shell_link": {
+      "mass_kg": 0.102437,
+      "hull_volume_m3": 0.0009329002409170373,
+      "volume_m3": 0.0005639008796247124
+    },
+    "display_module_link": {
+      "mass_kg": 0.0228873,
+      "hull_volume_m3": 8.900083615229296e-06,
+      "volume_m3": 3.402724468192541e-06
+    },
+    "tof_sensor_link": {
+      "mass_kg": 0.00148539,
+      "hull_volume_m3": 2.089827362199582e-06,
+      "volume_m3": 1.1266259309617949e-07
+    },
+    "camera_link": {
+      "mass_kg": 0.00201956,
+      "hull_volume_m3": 3.840062382649042e-06,
+      "volume_m3": 0.0
+    },
+    "LF_shoulder_link": {
+      "mass_kg": 0.047816,
+      "hull_volume_m3": 5.0589295065414837e-05,
+      "volume_m3": 3.38412030410586e-05
+    },
+    "LF_upper_arm_link": {
+      "mass_kg": 0.0602596,
+      "hull_volume_m3": 7.024850473991186e-05,
+      "volume_m3": 5.3650890525012885e-05
+    },
+    "LF_forearm_link": {
+      "mass_kg": 0.0585194,
+      "hull_volume_m3": 5.98676329703794e-05,
+      "volume_m3": 3.8540986077341146e-05
+    },
+    "LF_palm_link": {
+      "mass_kg": 0.0941372,
+      "hull_volume_m3": 0.00020307740640979603,
+      "volume_m3": 0.00018528579483423382
+    },
+    "LF_palm_pad_f_link": {
+      "mass_kg": 0.00192627,
+      "hull_volume_m3": 2.357948188997611e-06,
+      "volume_m3": 1.4061506127677805e-06
+    },
+    "LF_palm_pad_b_link": {
+      "mass_kg": 0.00192395,
+      "hull_volume_m3": 2.86442829157564e-06,
+      "volume_m3": 1.9931694602685353e-06
+    },
+    "LF_finger_link": {
+      "mass_kg": 0.0588541,
+      "hull_volume_m3": 7.203734129382629e-05,
+      "volume_m3": 2.229627750385217e-05
+    },
+    "LF_finger_tip_link": {
+      "mass_kg": 0.00203299,
+      "hull_volume_m3": 2.071973830103924e-06,
+      "volume_m3": 1.5424809178208664e-06
+    },
+    "LF_finger_grip_insert_link": {
+      "mass_kg": 0.0116013,
+      "hull_volume_m3": 1.5294749077113058e-05,
+      "volume_m3": 1.3650563551323413e-06
+    },
+    "LF_palm_grip_insert_link": {
+      "mass_kg": 0.0114241,
+      "hull_volume_m3": 1.762359983697801e-05,
+      "volume_m3": 5.177813632104133e-07
+    },
+    "RF_shoulder_link": {
+      "mass_kg": 0.047816,
+      "hull_volume_m3": 4.999326098822245e-05,
+      "volume_m3": 3.2725838609195354e-05
+    },
+    "RF_upper_arm_link": {
+      "mass_kg": 0.0604939,
+      "hull_volume_m3": 6.915332891143813e-05,
+      "volume_m3": 5.310595317089435e-05
+    },
+    "RF_forearm_link": {
+      "mass_kg": 0.0585194,
+      "hull_volume_m3": 5.982656369259412e-05,
+      "volume_m3": 3.8274343255155555e-05
+    },
+    "RF_palm_link": {
+      "mass_kg": 0.0941372,
+      "hull_volume_m3": 0.000193732871095772,
+      "volume_m3": 0.00017613030242801016
+    },
+    "RF_palm_pad_f_link": {
+      "mass_kg": 0.00192395,
+      "hull_volume_m3": 2.343000300711371e-06,
+      "volume_m3": 1.4729271390422032e-06
+    },
+    "RF_palm_pad_b_link": {
+      "mass_kg": 0.00192627,
+      "hull_volume_m3": 2.864372582765328e-06,
+      "volume_m3": 1.9453672833109e-06
+    },
+    "RF_palm_grip_insert_link": {
+      "mass_kg": 0.0114241,
+      "hull_volume_m3": 1.7287739312649087e-05,
+      "volume_m3": 5.580482250123121e-07
+    },
+    "RF_finger_link": {
+      "mass_kg": 0.0588541,
+      "hull_volume_m3": 6.979262569117708e-05,
+      "volume_m3": 2.350929700094454e-05
+    },
+    "RF_finger_grip_insert_link": {
+      "mass_kg": 0.0116013,
+      "hull_volume_m3": 1.450549951718462e-05,
+      "volume_m3": 1.4404686295540185e-06
+    },
+    "RF_finger_tip_link": {
+      "mass_kg": 0.00203299,
+      "hull_volume_m3": 2.0760468744284755e-06,
+      "volume_m3": 1.4720002758447664e-06
+    },
+    "LM_hip_link": {
+      "mass_kg": 0.0651491,
+      "hull_volume_m3": 0.00011141089819572775,
+      "volume_m3": 9.447532756099518e-05
+    },
+    "LM_thigh_link": {
+      "mass_kg": 0.0585194,
+      "hull_volume_m3": 5.986763180855119e-05,
+      "volume_m3": 3.843711498820317e-05
+    },
+    "LM_calf_link": {
+      "mass_kg": 0.0776801,
+      "hull_volume_m3": 0.00011779732053643193,
+      "volume_m3": 0.00010066370026440791
+    },
+    "LM_foot_tip_link": {
+      "mass_kg": 0.00637705,
+      "hull_volume_m3": 7.716043032643614e-06,
+      "volume_m3": 4.09482687699364e-06
+    },
+    "RM_hip_link": {
+      "mass_kg": 0.0651491,
+      "hull_volume_m3": 0.0001103107259056588,
+      "volume_m3": 9.250326542270831e-05
+    },
+    "RM_thigh_link": {
+      "mass_kg": 0.0585194,
+      "hull_volume_m3": 5.982656368056446e-05,
+      "volume_m3": 3.848313795470469e-05
+    },
+    "RM_calf_link": {
+      "mass_kg": 0.0776801,
+      "hull_volume_m3": 0.00011726847079491659,
+      "volume_m3": 0.00010049790678653557
+    },
+    "RM_foot_tip_link": {
+      "mass_kg": 0.00637705,
+      "hull_volume_m3": 7.716043092051673e-06,
+      "volume_m3": 4.100305299116259e-06
+    },
+    "LR_hip_link": {
+      "mass_kg": 0.0651491,
+      "hull_volume_m3": 0.00011141089819572763,
+      "volume_m3": 9.492431348072386e-05
+    },
+    "LR_thigh_link": {
+      "mass_kg": 0.0585194,
+      "hull_volume_m3": 5.9867631808551204e-05,
+      "volume_m3": 3.844040770795264e-05
+    },
+    "LR_calf_link": {
+      "mass_kg": 0.0776801,
+      "hull_volume_m3": 0.00011779732053643174,
+      "volume_m3": 0.00010048052543097359
+    },
+    "LR_foot_tip_link": {
+      "mass_kg": 0.00637705,
+      "hull_volume_m3": 7.716043032643616e-06,
+      "volume_m3": 4.0857219462151204e-06
+    },
+    "RR_hip_link": {
+      "mass_kg": 0.0651491,
+      "hull_volume_m3": 0.00011031072590565872,
+      "volume_m3": 9.283640381494333e-05
+    },
+    "RR_thigh_link": {
+      "mass_kg": 0.0585194,
+      "hull_volume_m3": 5.9826563680564444e-05,
+      "volume_m3": 3.844694288367793e-05
+    },
+    "RR_calf_link": {
+      "mass_kg": 0.0776801,
+      "hull_volume_m3": 0.00011726847079491656,
+      "volume_m3": 0.00010040409200989961
+    },
+    "RR_foot_tip_link": {
+      "mass_kg": 0.00637705,
+      "hull_volume_m3": 7.716043092051656e-06,
+      "volume_m3": 4.087921049953507e-06
+    }
+  }
+}

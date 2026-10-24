@@ -6,7 +6,15 @@ forces come from the task (`ocean.posture --hydro ...`), never from a scene, so
 the same scene can show the land baseline and the underwater runs side by side.
 
 Rock, sand and seaweed variants are meant to live beside this module, sharing
-`underwater_light`, and to register in `oceanking.plugin.install_scenes`.
+`underwater_light`, and to register in `oceanking.plugin.SCENES`.
+
+## Landmarks
+
+So that distance travelled can be read off a picture: the sand carries a faint
+0.5 m checkerboard, and survey stakes stand every 0.5 m along the +x and +y
+axes from the world origin, every metre's stake taller and red. They are visual
+only (no collision) and stand around the origin, i.e. around environment 0 --
+what a single-environment replay shows.
 
 ## Depth
 
@@ -32,7 +40,16 @@ ATTENUATION = (0.35, 0.07, 0.04)
 LIGHT_LEVEL = 1.2
 
 SAND = (0.76, 0.70, 0.55)
+SAND_DARK = (0.66, 0.60, 0.46)
 SAND_MARK = (0.60, 0.55, 0.42)
+
+#: Checker cell edge, m. With texuniform, texrepeat is repeats per metre and a
+#: builtin checker draws one cell per repeat (measured against the stakes).
+GRID_CELL = 0.5
+#: Survey stakes: spacing and how far out along +x and +y.
+STAKE_SPACING = 0.5
+STAKE_REACH_X = 3.0
+STAKE_REACH_Y = 2.0
 
 
 #: How much of the attenuated colour reaches the picture. 1.0 is the physical
@@ -95,8 +112,8 @@ def scene(depth: float = DEFAULT_DEPTH_M) -> Scene:
         headlight=headlight,
         textures=(
             sc.TextureCfg(
-                name="seabed_sand", type="2d", builtin="flat",
-                rgb1=SAND, rgb2=SAND, mark="random", markrgb=SAND_MARK, random=0.35,
+                name="seabed_sand", type="2d", builtin="checker",
+                rgb1=SAND, rgb2=SAND_DARK, mark="random", markrgb=SAND_MARK, random=0.15,
                 width=512, height=512,
             ),
             sky,
@@ -104,8 +121,36 @@ def scene(depth: float = DEFAULT_DEPTH_M) -> Scene:
         materials=(
             sc.MaterialCfg(
                 name="seabed_sand", texture="seabed_sand", texuniform=True,
-                texrepeat=(3.0, 3.0), reflectance=0.0, geom_names_expr=GROUND,
+                texrepeat=(1.0 / GRID_CELL,) * 2, reflectance=0.0,
+                geom_names_expr=GROUND,
             ),
         ),
         lights=lights,
+        decorate=add_landmarks,
+    )
+
+
+def add_landmarks(spec) -> None:
+    """Survey stakes along +x and +y, and a disc at the origin. Visual only."""
+    import mujoco
+
+    def stake(x: float, y: float, metre: bool) -> None:
+        h = 0.30 if metre else 0.16
+        spec.worldbody.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[0.015, h / 2, 0], pos=[x, y, h / 2],
+            rgba=[1.0, 0.25, 0.1, 1] if metre else [1.0, 1.0, 1.0, 1],
+            contype=0, conaffinity=0, group=0,
+        )
+
+    def ticks(reach: float) -> list[float]:
+        n = int(round(reach / STAKE_SPACING))
+        return [STAKE_SPACING * k for k in range(1, n + 1)]
+
+    for x in ticks(STAKE_REACH_X):
+        stake(x, -0.4, abs(x - round(x)) < 1e-9)
+    for y in ticks(STAKE_REACH_Y):
+        stake(-0.4, y, abs(y - round(y)) < 1e-9)
+    spec.worldbody.add_geom(
+        type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[0.25, 0.001, 0], pos=[0, 0, 0.001],
+        rgba=[0.2, 0.6, 0.9, 0.6], contype=0, conaffinity=0, group=0,
     )

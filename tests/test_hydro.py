@@ -12,7 +12,13 @@ import mujoco
 import numpy as np
 import pytest
 
-from oceanking.hydro import HydroCfg, apply_to_spec
+from oceanking.hydro import HydroCfg as _HydroCfg
+from oceanking.hydro import apply_to_spec
+
+
+def HydroCfg(**kw) -> _HydroCfg:  # noqa: N802 - these box tests use the uniform model
+    kw.setdefault("buoyancy_model", "uniform")
+    return _HydroCfg(**kw)
 
 G = 9.81
 BOX_HALF = (0.10, 0.06, 0.04)
@@ -27,10 +33,8 @@ def _box_spec(*, floor: bool = False, z: float = 1.0) -> mujoco.MjSpec:
         spec.worldbody.add_geom(type=mujoco.mjtGeom.mjGEOM_PLANE, size=[5, 5, 0.1])
     body = spec.worldbody.add_body(name="box", pos=[0, 0, z])
     body.add_freejoint()
-    body.add_geom(
-        type=mujoco.mjtGeom.mjGEOM_BOX, size=list(BOX_HALF), mass=BOX_MASS,
-        contype=1 if floor else 0, conaffinity=1 if floor else 0,
-    )
+    # Colliding (contype 1), as robot collision geoms are: drag is put on those.
+    body.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=list(BOX_HALF), mass=BOX_MASS)
     return spec
 
 
@@ -139,6 +143,37 @@ def test_standing_contact_load_is_weight_minus_buoyancy():
 
 
 # ── drag and current ────────────────────────────────────────────────────────
+
+
+def test_drag_depends_on_shape_not_on_mass():
+    """Ballast inside a hull must not change its drag. The ellipsoid model reads the
+    colliding geom's shape; the inertia-box model reads the body's inertia, which a
+    dense weight in one corner reshapes. Control: the inertia-box model does
+    change, so the comparison can fail."""
+
+    def fluid_force(ballast: float, ellipsoid: bool) -> np.ndarray:
+        spec = _box_spec()
+        spec.body("box").add_geom(
+            type=mujoco.mjtGeom.mjGEOM_SPHERE, size=[0.01, 0, 0], pos=[0.08, 0, -0.03],
+            mass=ballast, contype=0, conaffinity=0,
+        )
+        apply_to_spec(spec, HydroCfg(mode="drag"))
+        if not ellipsoid:
+            for g in spec.geoms:
+                g.fluid_ellipsoid = 0.0
+        m = spec.compile()
+        d = mujoco.MjData(m)
+        d.qvel[:] = [0.4, -0.2, 0.1, 0.5, 0.0, -0.3]
+        mujoco.mj_forward(m, d)
+        return d.qfrc_fluid.copy()
+
+    # Translational part: the ellipsoid model is mass-blind there. (The rotational
+    # part legitimately moves, because the centre of mass the torque is taken
+    # about moves with the ballast.)
+    np.testing.assert_allclose(fluid_force(1e-6, True)[:3], fluid_force(4.0, True)[:3],
+                               rtol=1e-9)
+    assert not np.allclose(fluid_force(1e-6, False)[:3], fluid_force(4.0, False)[:3],
+                           rtol=1e-3)
 
 
 def test_the_fluid_model_adds_no_buoyancy():

@@ -24,20 +24,27 @@ def _compile(task_args: dict, scene: str | None = None, **scene_args):
     return Scene(cfg.scene, device="cpu").compile()
 
 
-ARGS = dict(hydro_mode="full", buoyancy_ratio=0.5, current=(0.1, -0.05), drag_scale=2.0)
+ARGS = dict(
+    hydro_mode="full", buoyancy_ratio=0.85, buoyancy_model="archimedes", crown_air=0.3,
+    current=(0.1, -0.05), drag_scale=2.0,
+)
 
 
 def _robot_mass_weighted_beta(m) -> float:
-    moving = m.body_dofnum > 0
-    tree = np.isin(m.body_rootid, m.body_rootid[moving])
-    tree[0] = False
-    return float((m.body_mass * m.body_gravcomp)[tree].sum() / m.body_mass[tree].sum())
+    from oceanking.buoyancy import whole_robot_beta
+
+    return whole_robot_beta(m, "robot/base_link")
 
 
 @pytest.mark.parametrize("scene", [None, "seabed", "studio"])
 def test_task_arguments_reach_the_model_under_any_scene(scene):
     m = _compile(ARGS, scene)
-    assert _robot_mass_weighted_beta(m) == pytest.approx(0.5)
+    assert _robot_mass_weighted_beta(m) == pytest.approx(0.85)
+    assert m.body("robot/oceanking_crown").id > 0
+    # Drag is on the robot's colliding geoms after mjlab set their contype.
+    flagged = m.geom_fluid.reshape(m.ngeom, -1)[:, 0] > 0
+    robot = np.array([m.geom(g).name.startswith("robot/") for g in range(m.ngeom)])
+    assert flagged[robot].sum() >= 41
     assert m.opt.density == pytest.approx(2000.0)
     np.testing.assert_allclose(m.opt.wind, (0.1, -0.05, 0.0))
 

@@ -8,9 +8,9 @@ simulation despite buoyancy and currents.
 | Path | Contents |
 |---|---|
 | `jumper/` | The upstream [Jumper](https://github.com/KingKongRobotics/jumper) repository (Apache-2.0), merged with its history. Training, replay, assets. |
-| `oceanking/` | OceanKing's own code: `hydro.py` (underwater physics), `tasks/` and `scenes/`. |
+| `oceanking/` | OceanKing's own code: `hydro.py`, `buoyancy.py` (underwater physics), `trajectory.py`, `tasks/`, `scenes/`, `tools/`, `data/`. |
 | `tests/` | OceanKing's tests. |
-| `docs/` | OceanKing's own documents. |
+| `docs/` | OceanKing's own documents; [`PHYSICS.md`](docs/PHYSICS.md) is the physics specification. |
 | `scratch/` | Disposable experiments and outputs (git-ignored; may be deleted at any time). |
 
 ### How OceanKing plugs into Jumper
@@ -38,36 +38,30 @@ git merge -X subtree=jumper upstream/main
 
 ## Underwater physics
 
-`oceanking/hydro.py`, applied to the model before compilation so it acts in every physics
-substep on both backends:
+**Specification: [`docs/PHYSICS.md`](docs/PHYSICS.md)** — conventions, the robot's mass and
+volume, buoyancy, the ballast kit, drag and current, options, verification and measurements.
 
-- **Buoyancy**: `body.gravcomp = beta` on every body, i.e. a buoyant force `beta * m * g` at
-  each body's centre of mass. Masses, inertias and gravity are unchanged.
-- **Drag and current**: MuJoCo's inertia-box fluid model (`option.density`, `viscosity`)
-  with `option.wind` as the current, so drag acts on the velocity relative to the water.
-- **Depth** changes only the light in the `seabed` scene (`--depth`); fully submerged rigid
-  bodies feel no depth dependence in this model.
+In short: each link displaces its measured hull volume (sealed, Jumper floats at beta 1.35),
+a lead keel inside the torso and a buoyant crown tank on its roof bring the whole robot to the
+requested beta, drag is MuJoCo's ellipsoid fluid model on the colliding geoms, and the current is
+`option.wind`. All of it is applied before compilation, so it acts every substep on both backends.
 
-`ocean.posture` is upstream `jumper.posture` with this water installed. Its observation and
-action are unchanged, so the official `jumper.posture` checkpoint runs in it directly:
+`ocean.posture` is upstream `jumper.posture` with this physics; its observation and action are
+unchanged, so the official checkpoint runs in it directly:
 
 ```bash
 cd jumper
 CKPT=tasks/jumper/posture/out/example/model_74800.pt
 ../.venv/bin/python scripts/play.py --task ocean.posture --checkpoint $CKPT --scene seabed \
-    --hydro full --buoyancy 0.5 --current 0.0 0.1                  # live viewer
+    --buoyancy 0.8 --current -0.3 0                                  # live viewer
 MUJOCO_GL=egl ../.venv/bin/python scripts/play.py --task ocean.posture --checkpoint $CKPT \
-    --scene seabed --hydro off --backend native --device cpu --headless \
-    --steps 2000 --video land.mp4                                   # the land baseline
+    --scene seabed --hydro off --nominal --backend native --device cpu --headless --steps 2000 \
+    --trajectory-out land --video land.mp4 --no-video-follow --video-azimuth 90 \
+    --video-distance 4 --video-elevation -30 --video-lookat-height 0   # land baseline, fixed camera
 ```
 
-| Option | Meaning |
-|---|---|
-| `--hydro {off,buoyancy,drag,full}` | which effects are on (`off` is land) |
-| `--buoyancy BETA` | buoyancy-to-weight ratio, 0 land to 1 neutral (default 0.5) |
-| `--current VX VY` | water velocity in the world frame, m/s |
-| `--drag-scale K` | multiplier on the drag model's density |
-| `--depth M` | (`--scene seabed`) water depth for the light |
+Comparison videos with distance read-outs: `oceanking/tools/compare_video.py`. The volume
+table is regenerated with `.venv/bin/python -m oceanking.tools.link_volumes`.
 
 ## Setup
 

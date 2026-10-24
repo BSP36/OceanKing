@@ -1,53 +1,21 @@
 """Minimal underwater physics: buoyancy, drag and a uniform current.
 
-Everything here is a **model-level** edit made on the `MjSpec` before compilation,
-so MuJoCo applies it inside every physics substep on both of Jumper's backends
-(MuJoCo Warp on the GPU and native MuJoCo on the CPU) with no Python in the step
-loop and nothing to clear on reset.
+The specification is `docs/PHYSICS.md`; this module and `oceanking/buoyancy.py`
+implement it. Everything here is a **model-level** edit made on the `MjSpec`
+before compilation, so MuJoCo applies it inside every physics substep on both of
+Jumper's backends (MuJoCo Warp on the GPU and native MuJoCo on the CPU) with no
+Python in the step loop and nothing to clear on reset.
 
-## Buoyancy: `body.gravcomp`
-
-For a fully submerged rigid body of mass m_i and effective sealed volume V_i, the
-buoyant force is ``-rho * V_i * g`` at the centre of buoyancy. With the centre of
-buoyancy at the centre of mass (the first approximation), MuJoCo's gravity
-compensation is exactly that force::
-
-    gravcomp_i = rho * V_i / m_i
-
-We use one buoyancy-to-weight ratio ``beta`` for every body, i.e. the robot is
-treated as having a uniform effective density ``rho / beta``. Gravity, masses and
-inertias are left untouched. A body whose `gravcomp` is already non-zero when this
-runs (a prop that declares its own buoyancy) is left alone, so nothing is
-compensated twice.
-
-Not represented: an offset centre of buoyancy, partial submersion (a water
-surface) and added mass. Those need an explicit per-body wrench.
-
-## Drag and current: MuJoCo's inertia-box fluid model
-
-``option.density`` / ``option.viscosity`` switch on MuJoCo's inertia-box fluid
-model: per body, quadratic drag ``0.5 * rho * A * |v| v`` on the faces of the
-body's equivalent inertia box, a matching quadratic rotational drag, and a
-viscous (Stokes) term. ``option.wind`` is the fluid velocity, so drag acts on the
-velocity **relative to the current**: a body at rest in a moving fluid is pushed
-downstream. The model contains **no buoyancy term** (checked in MuJoCo Warp
-3.11.0, `_src/passive.py::_fluid_force`, and by `tests/test_hydro.py`), so it
-does not double-count with `gravcomp`.
-
-`drag_scale` multiplies the density seen by the drag model only; buoyancy is set
-by `buoyancy_ratio` and does not depend on it.
-
-## Cost
-
-Measured on the RTX PRO 6000 Blackwell / Ryzen 9 9950X3D workstation, 2026-10-24,
-`ocean.posture`, 4096 environments, MuJoCo Warp 3.11.0: 1.31 s per PPO iteration
-with `--hydro off` and 1.36 s with `--hydro full` (+4%).
-
-## Water depth
-
-With a fully submerged, incompressible model the depth has no effect on these
-forces. Depth is therefore a property of how a scene *looks* (light attenuation),
-not of this module.
+- **Buoyancy** is MuJoCo's gravity compensation, ``gravcomp_i = rho V_i / m_i``:
+  an upward force ``rho V_i g`` at each body's centre of mass. Two models:
+  ``archimedes`` (default) takes V_i from each link's measured hull and adds the
+  OceanKing ballast kit (`oceanking.buoyancy`); ``uniform`` gives every body the
+  same ratio, a diagnostic with no geometry behind it.
+- **Drag** is MuJoCo's ellipsoid fluid model on every colliding geom (blunt,
+  slender and angular drag; lift terms off), with ``option.wind`` as the current,
+  so it acts on the velocity relative to the water and depends on shape, not on
+  how mass is distributed inside a body. It contains no buoyancy term, so it never
+  double-counts with gravcomp.
 """
 
 from __future__ import annotations
@@ -57,6 +25,8 @@ from typing import Any, Literal
 
 Mode = Literal["off", "buoyancy", "drag", "full"]
 MODES: tuple[str, ...] = ("off", "buoyancy", "drag", "full")
+BuoyancyModel = Literal["archimedes", "uniform"]
+BUOYANCY_MODELS: tuple[str, ...] = ("archimedes", "uniform")
 
 #: Fresh water at about 20 degC. Declared scenario values, not calibrated ones.
 WATER_DENSITY = 1000.0  # kg/m^3
@@ -72,9 +42,17 @@ class HydroCfg:
     """Which effects are on: ``off`` (land), ``buoyancy``, ``drag`` (drag and
     current, no buoyancy) or ``full``."""
 
-    buoyancy_ratio: float = 0.5
-    """beta = rho * V / m for every body. 0 is land, 1 is neutral buoyancy; values
-    below 1 keep the robot on the seabed."""
+    buoyancy_ratio: float = 0.8
+    """beta = rho V / M, buoyant force over weight. ``archimedes``: of the whole
+    robot, reached by sizing the keel. ``uniform``: of every body. 1 is neutral;
+    below 1 the robot stays on the seabed."""
+
+    buoyancy_model: BuoyancyModel = "archimedes"
+    """How buoyancy is distributed; see the module docstring."""
+
+    crown_air: float = 0.5
+    """Air fraction of the crown's ballast tank (``archimedes`` only): 0 flooded,
+    1 blown. The keel is sized for `buoyancy_ratio` at this fraction."""
 
     water_density: float = WATER_DENSITY
     """kg/m^3, used by the drag model."""
@@ -94,6 +72,12 @@ class HydroCfg:
             raise ValueError(f"hydro mode {self.mode!r} is not one of {MODES}")
         if self.buoyancy_ratio < 0.0:
             raise ValueError(f"buoyancy_ratio must be >= 0, got {self.buoyancy_ratio}")
+        if self.buoyancy_model not in BUOYANCY_MODELS:
+            raise ValueError(
+                f"buoyancy model {self.buoyancy_model!r} is not one of {BUOYANCY_MODELS}"
+            )
+        if not 0.0 <= self.crown_air <= 1.0:
+            raise ValueError(f"crown_air must be in [0, 1], got {self.crown_air}")
         if self.water_density < 0.0 or self.water_viscosity < 0.0 or self.drag_scale < 0.0:
             raise ValueError("water_density, water_viscosity and drag_scale must be >= 0")
         if len(self.current) != 3:
@@ -117,22 +101,43 @@ class HydroCfg:
         if self.mode == "off":
             return "hydro off (land)"
         parts = [f"hydro mode={self.mode}"]
-        if self.buoyancy_on:
-            parts.append(f"beta={self.buoyancy_ratio:g}")
+        if self.buoyancy_on and self.buoyancy_model == "archimedes":
+            parts.append(self.ballast().describe())
+        elif self.buoyancy_on:
+            parts.append(f"uniform beta={self.buoyancy_ratio:g}")
         if self.drag_on:
             parts.append(f"rho={self.water_density:g} drag_scale={self.drag_scale:g}")
             parts.append("current=({:g}, {:g}, {:g}) m/s".format(*self.current))
         return " ".join(parts)
 
 
+    def ballast(self):
+        """The kit for this condition (``archimedes`` only)."""
+        from oceanking.buoyancy import solve_ballast
+
+        return solve_ballast(self.buoyancy_ratio, self.crown_air, self.water_density)
+
+
 def apply_to_spec(spec: Any, cfg: HydroCfg) -> None:
-    """Write `cfg` into an `mujoco.MjSpec` before it is compiled."""
-    if cfg.buoyancy_on:
+    """Write `cfg` into an `mujoco.MjSpec` before it is compiled.
+
+    ``uniform`` sets every body whose `gravcomp` is still zero; a body that
+    declares its own (a prop) keeps it. ``archimedes`` sets Jumper's links and
+    adds the kit, and leaves every other body alone.
+    """
+    if cfg.buoyancy_on and cfg.buoyancy_model == "uniform":
         for body in spec.bodies:
             if body.name == "world" or body.gravcomp != 0.0:
                 continue
             body.gravcomp = cfg.buoyancy_ratio
+    elif cfg.buoyancy_on:
+        from oceanking.buoyancy import install_on_spec
+
+        install_on_spec(spec, cfg.ballast())
     if cfg.drag_on:
+        from oceanking.buoyancy import set_drag_geoms
+
+        set_drag_geoms(spec)
         spec.option.density = cfg.water_density * cfg.drag_scale
         spec.option.viscosity = cfg.water_viscosity
         spec.option.wind = list(cfg.current)

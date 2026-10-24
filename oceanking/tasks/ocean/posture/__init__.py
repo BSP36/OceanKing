@@ -15,8 +15,8 @@ register(
     id="ocean.posture",
     assets=JUMPER_ASSETS,
     description=(
-        "jumper.posture underwater: buoyancy, drag and a current set by --hydro, "
-        "--buoyancy, --current and --drag-scale"
+        "jumper.posture underwater with the OceanKing ballast kit: buoyancy, drag "
+        "and a current set by --hydro, --buoyancy, --crown-air and --current"
     ),
     tags=("locomotion", "jumper", "ocean", "posture"),
 )
@@ -45,10 +45,27 @@ def cli_args(group):
         "--buoyancy",
         dest="buoyancy_ratio",
         type=float,
-        default=float(env("OCEAN_BUOYANCY", "0.5")),
+        default=float(env("OCEAN_BUOYANCY", "0.8")),
         metavar="BETA",
-        help="buoyancy-to-weight ratio rho*V/m of every body: 0 land, 1 neutral "
-        "(default: 0.5, or OCEAN_BUOYANCY)",
+        help="buoyancy-to-weight ratio rho*V/M of the whole robot, reached by sizing "
+        "the keel; 1 is neutral (default: 0.8, or OCEAN_BUOYANCY)",
+    )
+    group.add_argument(
+        "--buoyancy-model",
+        dest="buoyancy_model",
+        choices=("archimedes", "uniform"),
+        default=env("OCEAN_BUOYANCY_MODEL", "archimedes"),
+        help="archimedes: per-link hull volumes plus keel and crown (default); "
+        "uniform: the same ratio on every body, no kit (diagnostic)",
+    )
+    group.add_argument(
+        "--crown-air",
+        dest="crown_air",
+        type=float,
+        default=float(env("OCEAN_CROWN_AIR", "0.5")),
+        metavar="A",
+        help="air fraction of the crown's ballast tank, 0 flooded to 1 blown "
+        "(default: 0.5, or OCEAN_CROWN_AIR)",
     )
     group.add_argument(
         "--current",
@@ -67,4 +84,24 @@ def cli_args(group):
         default=float(env("OCEAN_DRAG_SCALE", "1.0")),
         help="multiplier on the fluid density seen by the drag model (default: 1)",
     )
-    return ("hydro_mode", "buoyancy_ratio", "current", "drag_scale")
+    group.add_argument(
+        "--nominal",
+        dest="nominal",
+        action="store_true",
+        default=env("OCEAN_NOMINAL", "") in ("1", "true", "on", "yes"),
+        help="replay the nominal robot from a fixed start, for side-by-side "
+        "comparisons: origin, facing +x, no startup randomisation (foot friction at "
+        "the asset's 1.2, no COM offset, no encoder bias)",
+    )
+    group.add_argument(
+        "--trajectory-out",
+        dest="trajectory_out",
+        default=env("OCEAN_TRAJECTORY_OUT", None),
+        metavar="PATH",
+        help="replay only: record the root pose and command of every control step "
+        "to PATH.npz / PATH.json (see oceanking/trajectory.py)",
+    )
+    return (
+        "hydro_mode", "buoyancy_ratio", "buoyancy_model", "crown_air", "current", "drag_scale",
+        "nominal", "trajectory_out",
+    )

@@ -1,0 +1,292 @@
+"""Archimedes buoyancy for Jumper, and the OceanKing ballast kit.
+
+See `docs/PHYSICS.md` for the specification this implements; the numbers there
+are produced by this module and `oceanking/tools/link_volumes.py`.
+
+## Per-link buoyancy
+
+Every robot link is a sealed housing displacing its own volume V_i, measured once
+from the link's collision hull (`oceanking/data/jumper_link_volumes.json`). Its
+buoyant force rho * V_i * g is applied at the link's centre of mass through
+MuJoCo's gravity compensation, ``gravcomp_i = rho * V_i / m_i``.
+
+Sealed, Jumper displaces 3.42 L against 2.543 kg (the upstream model's mass), a
+buoyancy-to-weight ratio of 1.35: it floats. Walking on the seabed needs ballast.
+
+## The kit
+
+- **Keel**: a lead plate inside the torso, at its floor. Inside the sealed hull, so
+  it adds mass and no volume. It is what makes the robot sink, and it sits low,
+  which keeps the centre of mass below the centre of buoyancy.
+- **Crown**: a rigid sealed shell on the torso's roof holding a ballast tank. It
+  displaces its outer volume whatever is inside; flooding the tank (air fraction
+  0) adds water mass, blowing it (air fraction 1) removes it. It sits high, so its
+  buoyancy rights the robot.
+
+The keel mass is solved so that the whole robot has the requested overall ratio
+``beta = rho * V_total / M_total`` at the requested crown air fraction.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+
+DATA = Path(__file__).resolve().parent / "data" / "jumper_link_volumes.json"
+
+LEAD_DENSITY = 11340.0  # kg/m^3
+PETG_DENSITY = 1270.0  # kg/m^3
+
+#: Crown: a sealed cylinder on the torso roof. Outer size chosen for a ~1 L
+#: displacement, the tank range a visible trim needs (docs/PHYSICS.md).
+CROWN_RADIUS = 0.065  # m
+CROWN_HEIGHT = 0.075  # m
+CROWN_WALL = 0.003  # m, PETG
+#: Keel footprint; the thickness follows from the mass.
+KEEL_FOOTPRINT = (0.12, 0.10)  # m, x by y
+#: Gap between the torso's lowest point and the keel's underside.
+KEEL_CLEARANCE = 0.005  # m
+
+#: Ellipsoid fluid model coefficients for drag-only use: blunt drag, slender drag,
+#: angular drag, Kutta lift, Magnus lift. The first three are MuJoCo's defaults;
+#: lift is switched off (docs/PHYSICS.md).
+DRAG_COEFS = (0.5, 0.25, 1.5, 0.0, 0.0)
+NO_FLUID = (0.0, 0.0, 0.0, 0.0, 0.0)
+
+GOLD = (0.95, 0.75, 0.15, 1.0)
+RUBY = (0.8, 0.05, 0.1, 1.0)
+LEAD_GREY = (0.35, 0.36, 0.38, 1.0)
+
+
+def crown_outer_volume() -> float:
+    return math.pi * CROWN_RADIUS**2 * CROWN_HEIGHT
+
+
+def crown_tank_volume() -> float:
+    return math.pi * (CROWN_RADIUS - CROWN_WALL) ** 2 * (CROWN_HEIGHT - 2 * CROWN_WALL)
+
+
+def crown_shell_mass() -> float:
+    return (crown_outer_volume() - crown_tank_volume()) * PETG_DENSITY
+
+
+@lru_cache(maxsize=1)
+def link_table() -> dict:
+    return json.loads(DATA.read_text(encoding="utf-8"))
+
+
+def check_model(xml: Path) -> None:
+    """Refuse a model the volume table was not measured on."""
+    table = link_table()
+    digest = hashlib.sha256(Path(xml).read_bytes()).hexdigest()
+    if digest != table["model_sha256"]:
+        raise RuntimeError(
+            f"{xml} is not the model {DATA.name} was measured on ({table['model']}). "
+            "Re-run `.venv/bin/python -m oceanking.tools.link_volumes`."
+        )
+
+
+@dataclass(frozen=True)
+class Ballast:
+    """The kit for one condition, and the resulting whole-robot numbers (SI)."""
+
+    rho: float
+    beta: float
+    crown_air: float
+    robot_mass: float
+    robot_volume: float
+    crown_volume: float
+    crown_shell_mass: float
+    crown_water_mass: float
+    keel_mass: float
+
+    @property
+    def crown_mass(self) -> float:
+        return self.crown_shell_mass + self.crown_water_mass
+
+    @property
+    def total_mass(self) -> float:
+        return self.robot_mass + self.crown_mass + self.keel_mass
+
+    @property
+    def total_volume(self) -> float:
+        return self.robot_volume + self.crown_volume
+
+    @property
+    def keel_thickness(self) -> float:
+        return self.keel_mass / (LEAD_DENSITY * KEEL_FOOTPRINT[0] * KEEL_FOOTPRINT[1])
+
+    def beta_at(self, crown_air: float) -> float:
+        """Overall ratio with this keel and another crown air fraction."""
+        water = self.rho * crown_tank_volume() * (1.0 - crown_air)
+        mass = self.robot_mass + self.crown_shell_mass + water + self.keel_mass
+        return self.rho * self.total_volume / mass
+
+    def describe(self) -> str:
+        return (
+            f"archimedes beta={self.beta:g} (robot {self.robot_mass:.3f} kg / "
+            f"{self.robot_volume * 1e3:.2f} L, keel {self.keel_mass:.3f} kg lead, "
+            f"crown {self.crown_volume * 1e3:.2f} L air={self.crown_air:g}, total "
+            f"{self.total_mass:.3f} kg; trim range beta {self.beta_at(0.0):.3f}-"
+            f"{self.beta_at(1.0):.3f})"
+        )
+
+
+def solve_ballast(beta: float, crown_air: float, rho: float) -> Ballast:
+    """The keel mass giving overall ratio `beta` at crown air fraction `crown_air`."""
+    if not 0.0 <= crown_air <= 1.0:
+        raise ValueError(f"crown air fraction must be in [0, 1], got {crown_air}")
+    if beta <= 0.0:
+        raise ValueError(f"archimedes buoyancy needs beta > 0, got {beta}")
+    table = link_table()
+    robot_mass = table["total_mass_kg"]
+    robot_volume = table["total_volume_m3"]
+    water = rho * crown_tank_volume() * (1.0 - crown_air)
+    keel = rho * (robot_volume + crown_outer_volume()) / beta - (
+        robot_mass + crown_shell_mass() + water
+    )
+    if keel < 0.0:
+        light = rho * (robot_volume + crown_outer_volume()) / (
+            robot_mass + crown_shell_mass() + water
+        )
+        raise ValueError(
+            f"beta={beta} at crown air {crown_air} needs negative ballast: without a "
+            f"keel the robot already has beta={light:.3f}"
+        )
+    ballast = Ballast(
+        rho=rho, beta=beta, crown_air=crown_air, robot_mass=robot_mass,
+        robot_volume=robot_volume, crown_volume=crown_outer_volume(),
+        crown_shell_mass=crown_shell_mass(), crown_water_mass=water, keel_mass=keel,
+    )
+    bounds = table["torso_bounds_m"]
+    room = 0.5 * (bounds["max"][2] - bounds["min"][2])
+    if ballast.keel_thickness > room:
+        raise ValueError(
+            f"beta={beta} needs {keel:.2f} kg of lead, a {ballast.keel_thickness * 1e3:.0f} mm "
+            f"plate: more than half the torso's height"
+        )
+    return ballast
+
+
+# ── spec edits ──────────────────────────────────────────────────────────────
+
+
+def _link(body: Any) -> str:
+    return body.name.rsplit("/", 1)[-1]
+
+
+def _box_inertia(mass: float, size: tuple[float, float, float]) -> list[float]:
+    x, y, z = size
+    return [mass * (y * y + z * z) / 12, mass * (x * x + z * z) / 12, mass * (x * x + y * y) / 12]
+
+
+def _cylinder_inertia(mass: float, r: float, h: float) -> list[float]:
+    side = mass * (3 * r * r + h * h) / 12
+    return [side, side, mass * r * r / 2]
+
+
+def install_on_spec(spec: Any, ballast: Ballast) -> None:
+    """Per-link buoyancy plus the kit, on a spec holding Jumper's links."""
+    import mujoco
+
+    links = link_table()["links"]
+    found = {}
+    for body in spec.bodies:
+        if _link(body) in links:
+            found[_link(body)] = body
+    if set(found) != set(links):
+        missing = sorted(set(links) - set(found))
+        raise RuntimeError(f"archimedes buoyancy: Jumper links not in the model: {missing}")
+
+    for name, body in found.items():
+        entry = links[name]
+        if not math.isclose(body.mass, entry["mass_kg"], rel_tol=1e-6, abs_tol=1e-9):
+            raise RuntimeError(
+                f"{body.name} has mass {body.mass} kg, the volume table says "
+                f"{entry['mass_kg']} kg: the table is for another model"
+            )
+        body.gravcomp = ballast.rho * entry["volume_m3"] / body.mass if body.mass > 0 else 0.0
+
+    base = found["base_link"]
+    bounds = link_table()["torso_bounds_m"]
+    cx = 0.5 * (bounds["min"][0] + bounds["max"][0])
+    cy = 0.5 * (bounds["min"][1] + bounds["max"][1])
+    prefix = base.name[: -len("base_link")]
+
+    # Keel: inside the hull, so no volume and no drag of its own.
+    if ballast.keel_mass > 0.0:
+        t = ballast.keel_thickness
+        size = (*KEEL_FOOTPRINT, t)
+        keel = base.add_body(
+            name=f"{prefix}oceanking_keel",
+            pos=[cx, cy, bounds["min"][2] + KEEL_CLEARANCE + t / 2],
+        )
+        keel.explicitinertial = True
+        keel.mass = ballast.keel_mass
+        keel.inertia = _box_inertia(ballast.keel_mass, size)
+        keel.gravcomp = 0.0
+        g = keel.add_geom(
+            name=f"{prefix}oceanking_keel_plate", type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[s / 2 for s in size], rgba=list(LEAD_GREY), contype=0, conaffinity=0,
+            group=2, mass=0.0,
+        )
+        g.fluid_ellipsoid = 1.0
+        g.fluid_coefs = list(NO_FLUID)
+
+    # Crown: displaces its outer volume, carries drag, buoyant and high.
+    crown = base.add_body(
+        name=f"{prefix}oceanking_crown",
+        pos=[cx, cy, bounds["max"][2] + CROWN_HEIGHT / 2],
+    )
+    crown.explicitinertial = True
+    crown.mass = ballast.crown_mass
+    crown.inertia = _cylinder_inertia(ballast.crown_mass, CROWN_RADIUS, CROWN_HEIGHT)
+    crown.gravcomp = ballast.rho * ballast.crown_volume / ballast.crown_mass
+    band = crown.add_geom(
+        name=f"{prefix}oceanking_crown_band", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+        size=[CROWN_RADIUS, CROWN_HEIGHT / 2, 0], rgba=list(GOLD), contype=0,
+        conaffinity=0, group=2, mass=0.0,
+    )
+    band.fluid_ellipsoid = 1.0
+    band.fluid_coefs = list(DRAG_COEFS)
+    for k in range(5):
+        a = 2 * math.pi * k / 5
+        x, y = 0.85 * CROWN_RADIUS * math.cos(a), 0.85 * CROWN_RADIUS * math.sin(a)
+        crown.add_geom(
+            name=f"{prefix}oceanking_crown_point{k}", type=mujoco.mjtGeom.mjGEOM_ELLIPSOID,
+            size=[0.012, 0.012, 0.03], pos=[x, y, CROWN_HEIGHT / 2 + 0.02],
+            rgba=list(GOLD), contype=0, conaffinity=0, group=2, mass=0.0,
+        )
+        crown.add_geom(
+            name=f"{prefix}oceanking_crown_jewel{k}", type=mujoco.mjtGeom.mjGEOM_SPHERE,
+            size=[0.01, 0, 0], pos=[x * 1.02, y * 1.02, 0.0],
+            rgba=list(RUBY), contype=0, conaffinity=0, group=2, mass=0.0,
+        )
+
+
+def whole_robot_beta(model: Any, base: str = "robot/base_link") -> float:
+    """Buoyant force over weight for every body under `base`'s root, from a
+    compiled model: sum(m_i * gravcomp_i) / sum(m_i)."""
+    tree = model.body_rootid == model.body_rootid[model.body(base).id]
+    mass = model.body_mass[tree]
+    return float((mass * model.body_gravcomp[tree]).sum() / mass.sum())
+
+
+def set_drag_geoms(spec: Any) -> None:
+    """Geometry-based drag: the ellipsoid fluid model on every colliding geom."""
+    for geom in spec.geoms:
+        if geom.contype or geom.conaffinity:
+            geom.fluid_ellipsoid = 1.0
+            geom.fluid_coefs = list(DRAG_COEFS)
+
+
+__all__ = [
+    "Ballast", "check_model", "crown_outer_volume", "crown_tank_volume", "install_on_spec",
+    "link_table", "set_drag_geoms", "solve_ballast", "whole_robot_beta",
+]
