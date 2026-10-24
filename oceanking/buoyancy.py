@@ -18,7 +18,8 @@ buoyancy-to-weight ratio of 1.35: it floats. Walking on the seabed needs ballast
 - **Keel**: a lead plate inside the torso, at its floor. Inside the sealed hull, so
   it adds mass and no volume. It is what makes the robot sink, and it sits low,
   which keeps the centre of mass below the centre of buoyancy.
-- **Crown**: a rigid sealed shell on the torso's roof holding a ballast tank. It
+- **Crown** (`oceanking.crown`): a gold band round a velvet dome, the dome and band
+  one rigid sealed ballast tank, on the torso's roof. It
   displaces its outer volume whatever is inside; flooding the tank (air fraction
   0) adds water mass, blowing it (air fraction 1) removes it. It sits high, so its
   buoyancy rights the robot.
@@ -37,17 +38,13 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from oceanking import crown
+
 
 DATA = Path(__file__).resolve().parent / "data" / "jumper_link_volumes.json"
 
 LEAD_DENSITY = 11340.0  # kg/m^3
-PETG_DENSITY = 1270.0  # kg/m^3
 
-#: Crown: a sealed cylinder on the torso roof. Outer size chosen for a ~1 L
-#: displacement, the tank range a visible trim needs (docs/PHYSICS.md).
-CROWN_RADIUS = 0.065  # m
-CROWN_HEIGHT = 0.075  # m
-CROWN_WALL = 0.003  # m, PETG
 #: Keel footprint; the thickness follows from the mass.
 KEEL_FOOTPRINT = (0.12, 0.10)  # m, x by y
 #: Gap between the torso's lowest point and the keel's underside.
@@ -59,21 +56,19 @@ KEEL_CLEARANCE = 0.005  # m
 DRAG_COEFS = (0.5, 0.25, 1.5, 0.0, 0.0)
 NO_FLUID = (0.0, 0.0, 0.0, 0.0, 0.0)
 
-GOLD = (0.95, 0.75, 0.15, 1.0)
-RUBY = (0.8, 0.05, 0.1, 1.0)
 LEAD_GREY = (0.35, 0.36, 0.38, 1.0)
 
 
 def crown_outer_volume() -> float:
-    return math.pi * CROWN_RADIUS**2 * CROWN_HEIGHT
+    return crown.outer_volume()
 
 
 def crown_tank_volume() -> float:
-    return math.pi * (CROWN_RADIUS - CROWN_WALL) ** 2 * (CROWN_HEIGHT - 2 * CROWN_WALL)
+    return crown.tank_volume()
 
 
 def crown_shell_mass() -> float:
-    return (crown_outer_volume() - crown_tank_volume()) * PETG_DENSITY
+    return crown.dry_mass()
 
 
 @lru_cache(maxsize=1)
@@ -186,11 +181,6 @@ def _box_inertia(mass: float, size: tuple[float, float, float]) -> list[float]:
     return [mass * (y * y + z * z) / 12, mass * (x * x + z * z) / 12, mass * (x * x + y * y) / 12]
 
 
-def _cylinder_inertia(mass: float, r: float, h: float) -> list[float]:
-    side = mass * (3 * r * r + h * h) / 12
-    return [side, side, mass * r * r / 2]
-
-
 def install_on_spec(spec: Any, ballast: Ballast) -> None:
     """Per-link buoyancy plus the kit, on a spec holding Jumper's links."""
     import mujoco
@@ -241,37 +231,17 @@ def install_on_spec(spec: Any, ballast: Ballast) -> None:
         g.fluid_coefs = list(NO_FLUID)
 
     # Crown: displaces its outer volume, carries drag, buoyant and high.
-    crown = base.add_body(
-        name=f"{prefix}oceanking_crown",
-        pos=[cx, cy, bounds["max"][2] + CROWN_HEIGHT / 2],
+    body = base.add_body(
+        name=f"{prefix}oceanking_crown", pos=[cx, cy, bounds["max"][2] - crown.SEAT_DEPTH]
     )
-    crown.explicitinertial = True
-    crown.mass = ballast.crown_mass
-    crown.inertia = _cylinder_inertia(ballast.crown_mass, CROWN_RADIUS, CROWN_HEIGHT)
-    crown.gravcomp = ballast.rho * ballast.crown_volume / ballast.crown_mass
-    # The band collides the way the torso does (see `_torso_collision`): with the
-    # ground and props, not with the robot's own limbs.
-    contype, conaffinity, condim = _torso_collision(found["base_link"], spec)
-    band = crown.add_geom(
-        name=f"{prefix}oceanking_crown_band", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        size=[CROWN_RADIUS, CROWN_HEIGHT / 2, 0], rgba=list(GOLD), contype=contype,
-        conaffinity=conaffinity, condim=condim, group=2, mass=0.0,
-    )
-    band.fluid_ellipsoid = 1.0
-    band.fluid_coefs = list(DRAG_COEFS)
-    for k in range(5):
-        a = 2 * math.pi * k / 5
-        x, y = 0.85 * CROWN_RADIUS * math.cos(a), 0.85 * CROWN_RADIUS * math.sin(a)
-        crown.add_geom(
-            name=f"{prefix}oceanking_crown_point{k}", type=mujoco.mjtGeom.mjGEOM_ELLIPSOID,
-            size=[0.012, 0.012, 0.03], pos=[x, y, CROWN_HEIGHT / 2 + 0.02],
-            rgba=list(GOLD), contype=0, conaffinity=0, group=2, mass=0.0,
-        )
-        crown.add_geom(
-            name=f"{prefix}oceanking_crown_jewel{k}", type=mujoco.mjtGeom.mjGEOM_SPHERE,
-            size=[0.01, 0, 0], pos=[x * 1.02, y * 1.02, 0.0],
-            rgba=list(RUBY), contype=0, conaffinity=0, group=2, mass=0.0,
-        )
+    body.explicitinertial = True
+    body.mass = ballast.crown_mass
+    body.ipos = [0.0, 0.0, crown.centre_height()]
+    body.inertia = crown.inertia(ballast.crown_mass)
+    body.gravcomp = ballast.rho * ballast.crown_volume / ballast.crown_mass
+    # Its colliding parts collide the way the torso does (see `_torso_collision`):
+    # with the ground and props, not with the robot's own limbs.
+    crown.build(spec, body, prefix, _torso_collision(base, spec), DRAG_COEFS)
 
 
 def _torso_collision(base: Any, spec: Any) -> tuple[int, int, int]:

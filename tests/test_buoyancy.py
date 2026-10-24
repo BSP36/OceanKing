@@ -186,28 +186,33 @@ def test_whole_robot_sinks_at_g_times_one_minus_beta(backend):
 
 
 def _upside_down_crown_bottom(collide: bool) -> tuple[float, int]:
-    """Drop the kitted robot upside down; return the crown's lowest point and how
-    many contacts the crown has after settling.
+    """Set the kitted robot upside down with its crown 2 mm above the floor and
+    let it settle for 0.3 s; return the crown's lowest point and how many
+    contacts the crown has.
 
-    Buoyancy is zeroed after the kit is installed: in water the kit rights the
-    robot within about a second (measured 2026-10-24), and this is a test of the
-    crown's collision, not of its buoyancy."""
+    Short on purpose: balanced on the dome the robot topples within a second, and
+    in water the kit turns it over (both measured 2026-10-24). Buoyancy is zeroed:
+    this is a test of the crown's collision, not of its buoyancy."""
     spec = mujoco.MjSpec.from_file(str(XML))
     spec.worldbody.add_geom(type=mujoco.mjtGeom.mjGEOM_PLANE, size=[5, 5, 0.1])
     apply_to_spec(spec, HydroCfg(mode="buoyancy", buoyancy_ratio=0.8))
     for body in spec.bodies:
         body.gravcomp = 0.0
     if not collide:
-        band = spec.geom("oceanking_crown_band")
-        band.contype = band.conaffinity = 0
+        for g in spec.geoms:
+            if g.name.startswith("oceanking_crown"):
+                g.contype = g.conaffinity = 0
     m = spec.compile()
-    d = _home(m, z=0.35)
+    orb = m.geom("oceanking_crown_orb").id  # the crown's highest part: lowest, inverted
+    d = _home(m, z=1.0)
     d.qpos[3:7] = [0.0, 1.0, 0.0, 0.0]  # rolled 180 degrees: crown down
-    for _ in range(1500):
+    mujoco.mj_forward(m, d)
+    d.qpos[2] -= d.geom_xpos[orb][2] - m.geom_size[orb][0] - 0.002
+    for _ in range(300):
         mujoco.mj_step(m, d)
-    band = m.geom("oceanking_crown_band").id
-    contacts = sum(band in (c.geom1, c.geom2) for c in d.contact[: d.ncon])
-    bottom = d.geom_xpos[band][2] - B.CROWN_HEIGHT / 2  # axis vertical when upside down
+    crown = {g for g in range(m.ngeom) if m.geom(g).name.startswith("oceanking_crown")}
+    contacts = sum(bool({c.geom1, c.geom2} & crown) for c in d.contact[: d.ncon])
+    bottom = min(d.geom_xpos[g][2] for g in crown) - m.geom_size[orb][0]
     return bottom, contacts
 
 

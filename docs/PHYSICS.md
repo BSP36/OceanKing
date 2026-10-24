@@ -110,7 +110,7 @@ action are unchanged.
 | Part | Where | Specification | Buoyancy |
 |---|---|---|---|
 | **Keel** | inside the torso, 5 mm above its floor, centred | lead (11340 kg/m^3), 120 x 100 mm footprint, thickness from its mass | none of its own: inside the sealed hull |
-| **Crown** | on the torso roof, centred | sealed PETG cylinder, r = 65 mm, h = 75 mm, 3 mm wall: outer volume 0.995 L, tank 0.833 L, shell 0.206 kg | `rho * 0.995 L`, at the crown's centre of mass |
+| **Crown** | on the torso roof, centred, seated 3 mm into its crest | gold band (r = 65 mm, h = 45 mm) round a velvet dome (half-ellipsoid, r = 61 mm, h = 45 mm), five gold points, an orb; the band and dome are one sealed PETG tank, 3 mm wall ([`oceanking/crown.py`](../oceanking/crown.py)): outer volume 0.977 L, tank 0.803 L, dry mass 0.221 kg | `rho * 0.977 L`, at the crown's centre of mass |
 
 The crown's ballast tank holds air fraction `a` (`--crown-air`, 0 flooded to 1
 blown); its water, `rho * 0.833 L * (1 - a)`, is crown mass. The **keel mass is
@@ -125,10 +125,10 @@ with that keel (`a` from 0 to 1):
 
 | beta | keel | plate | total mass | tank trim range |
 |---|---|---|---|---|
-| 0.70 | 3.148 kg | 23.1 mm | 6.313 kg | 0.657 – 0.749 |
-| **0.80** (default) | **2.359 kg** | **17.3 mm** | **5.524 kg** | **0.744 – 0.865** |
-| 0.90 | 1.745 kg | 12.8 mm | 4.910 kg | 0.830 – 0.983 |
-| 0.95 | 1.486 kg | 10.9 mm | 4.652 kg | 0.872 – 1.043 |
+| 0.70 | 3.122 kg | 22.9 mm | 6.287 kg | 0.658 – 0.748 |
+| **0.80** (default) | **2.336 kg** | **17.2 mm** | **5.501 kg** | **0.746 – 0.863** |
+| 0.90 | 1.724 kg | 12.7 mm | 4.890 kg | 0.832 – 0.981 |
+| 0.95 | 1.467 kg | 10.8 mm | 4.633 kg | 0.874 – 1.040 |
 
 Refused: a keel thicker than half the torso's height (79 mm), i.e. `beta` below
 about 0.55, and a negative keel (`beta` above about 1.6 with the tank blown).
@@ -141,11 +141,17 @@ of mass high and make the robot capsize.
 The tank fill is constant within a run. Changing it at run time (diving,
 surfacing, trimming) is the next step and will keep the keel fixed.
 
-**Collision.** The crown's cylinder collides exactly as the torso does — its
-collision bits are copied from the torso's colliding geom at build time: with the
-ground and props, not with the robot's own limbs. The keel has no collision: it
-lies inside the torso's hull, which meets anything first. Cost: none measurable
-(section 9).
+**Collision.** Every part of the crown that stands proud — band, dome, the five
+points and their tips, the orb — collides exactly as the torso does: its
+collision bits are copied from the torso's colliding geom at build time, so it
+meets the ground and props and not the robot's own limbs. The jewels are set
+flush into the band and are visual only. The keel has no collision: it lies
+inside the torso's hull, which meets anything first. Cost: +6% per training
+iteration (section 9).
+
+**Seat.** The roof is curved; the crown sits 3 mm below its crest so that no gap
+shows at the rim. The overlap with the torso's hull, at most 40 cm^3 (1.2% of the
+robot's volume), is counted as displacement twice.
 
 ## 6. Drag and current
 
@@ -238,12 +244,13 @@ Workstation: RTX PRO 6000 Blackwell, Ryzen 9 9950X3D; MuJoCo 3.11.0, MuJoCo Warp
 **Training cost**, `ocean.posture`, 4096 environments, per PPO iteration
 (2026-10-24): land 1.31 s; water (`full`, ellipsoid drag) 1.74 s (+33%). The
 earlier inertia-box drag cost 1.36 s; the ellipsoid model evaluates every
-colliding geom. Adding the crown's collision: 1.72 s, no measurable change.
+colliding geom. A plain cylinder crown with collision: 1.72 s. The crown of
+section 5, thirteen colliding geoms (five of them meshes): 1.83 s (+6%).
 
 **Righting** (2026-10-24, native, beta 0.8, joints PD-held at HOME, no policy):
 dropped upside down from 0.35 m, the robot lands on its crown and the kit's
-moment turns it from inverted (body z-axis . world z = -1.00) to 0.48 (about 61
-deg from upright) within 2 s, where it stays propped on its legs. The moment
+moment turns it from inverted (body z-axis . world z = -1.00) to 0.55 (about 57
+deg from upright) within 2.5 s, where it stays propped on its legs. The moment
 rights the hull; legs held still stop it short.
 
 **Official `jumper.posture` policy, land vs water** (2026-10-24, `--nominal`, one
@@ -253,12 +260,16 @@ then turn). Mean velocity over the steady part of each phase:
 | Condition | forward phase (cmd 0.5) | sideways phase (cmd 0.3) |
 |---|---|---|
 | Land | 0.42 m/s | 0.22 m/s |
-| Water, beta 0.8 (kit) | 0.20 m/s | 0.18 m/s |
-| Water, beta 0.95 (kit) | 0.09 m/s | 0.10 m/s |
-| Water, beta 0.8, head current 0.3 m/s | **−0.07 m/s** (carried backwards) | 0.14 m/s, drifting −0.10 m/s in x |
+| Water, beta 0.8 (kit) | 0.19 m/s | 0.17 m/s |
+| Water, beta 0.95 (kit) | 0.08 m/s | 0.10 m/s |
+| Water, beta 0.8, head current 0.3 m/s | **−0.10 m/s** (carried backwards) | 0.13 m/s, drifting −0.11 m/s in x |
+
+Repeat runs of the same nominal condition agree to about 2 cm in final position.
 
 Not yet separated: how much of the underwater slow-down is drag, how much is
 reduced traction, and how much is the kit's added mass (5.5 kg against 2.5 kg).
+The kit was redesigned (section 5) after the first measurement; the table is
+the redesigned kit's.
 
 ## 10. Known limitations
 
@@ -267,6 +278,7 @@ reduced traction, and how much is the kit's added mass (5.5 kg against 2.5 kg).
 3. Centre of buoyancy per link at the link's centre of mass (section 4).
 4. Drag: ellipsoid approximation per geom, overlapping hulls double-exposed, no
    added mass, no lift (section 6).
-5. The kit is welded; the crown does not collide with the robot's own limbs; the
-   official policy was never trained with the kit's mass.
+5. The kit is welded; the crown does not collide with the robot's own limbs, and
+   its seat overlaps the hull by up to 40 cm^3 (section 5); the official policy
+   was never trained with the kit's mass.
 6. Fully submerged only; no water surface.
