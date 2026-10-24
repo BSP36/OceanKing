@@ -183,3 +183,38 @@ def test_whole_robot_sinks_at_g_times_one_minus_beta(backend):
     mujoco.mj_subtreeVel(m, d)
     com_vz = d.subtree_linvel[m.body("base_link").id][2]
     assert com_vz == pytest.approx(-(1.0 - beta) * G * t, rel=1e-3)
+
+
+def _upside_down_crown_bottom(collide: bool) -> tuple[float, int]:
+    """Drop the kitted robot upside down; return the crown's lowest point and how
+    many contacts the crown has after settling.
+
+    Buoyancy is zeroed after the kit is installed: in water the kit rights the
+    robot within about a second (measured 2026-10-24), and this is a test of the
+    crown's collision, not of its buoyancy."""
+    spec = mujoco.MjSpec.from_file(str(XML))
+    spec.worldbody.add_geom(type=mujoco.mjtGeom.mjGEOM_PLANE, size=[5, 5, 0.1])
+    apply_to_spec(spec, HydroCfg(mode="buoyancy", buoyancy_ratio=0.8))
+    for body in spec.bodies:
+        body.gravcomp = 0.0
+    if not collide:
+        band = spec.geom("oceanking_crown_band")
+        band.contype = band.conaffinity = 0
+    m = spec.compile()
+    d = _home(m, z=0.35)
+    d.qpos[3:7] = [0.0, 1.0, 0.0, 0.0]  # rolled 180 degrees: crown down
+    for _ in range(1500):
+        mujoco.mj_step(m, d)
+    band = m.geom("oceanking_crown_band").id
+    contacts = sum(band in (c.geom1, c.geom2) for c in d.contact[: d.ncon])
+    bottom = d.geom_xpos[band][2] - B.CROWN_HEIGHT / 2  # axis vertical when upside down
+    return bottom, contacts
+
+
+def test_an_upside_down_robot_rests_on_its_crown():
+    """The crown collides with the ground like the torso. Control: without its
+    collision it sinks into the floor, so the check can fail."""
+    bottom, contacts = _upside_down_crown_bottom(collide=True)
+    assert contacts > 0 and bottom > -0.005
+    bottom, contacts = _upside_down_crown_bottom(collide=False)
+    assert contacts == 0 and bottom < -0.02

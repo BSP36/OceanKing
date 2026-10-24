@@ -219,7 +219,8 @@ def install_on_spec(spec: Any, ballast: Ballast) -> None:
     cy = 0.5 * (bounds["min"][1] + bounds["max"][1])
     prefix = base.name[: -len("base_link")]
 
-    # Keel: inside the hull, so no volume and no drag of its own.
+    # Keel: inside the hull, so no volume, no drag and no collision of its own --
+    # anything reaching it meets the torso's hull first.
     if ballast.keel_mass > 0.0:
         t = ballast.keel_thickness
         size = (*KEEL_FOOTPRINT, t)
@@ -248,10 +249,13 @@ def install_on_spec(spec: Any, ballast: Ballast) -> None:
     crown.mass = ballast.crown_mass
     crown.inertia = _cylinder_inertia(ballast.crown_mass, CROWN_RADIUS, CROWN_HEIGHT)
     crown.gravcomp = ballast.rho * ballast.crown_volume / ballast.crown_mass
+    # The band collides the way the torso does (see `_torso_collision`): with the
+    # ground and props, not with the robot's own limbs.
+    contype, conaffinity, condim = _torso_collision(found["base_link"], spec)
     band = crown.add_geom(
         name=f"{prefix}oceanking_crown_band", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        size=[CROWN_RADIUS, CROWN_HEIGHT / 2, 0], rgba=list(GOLD), contype=0,
-        conaffinity=0, group=2, mass=0.0,
+        size=[CROWN_RADIUS, CROWN_HEIGHT / 2, 0], rgba=list(GOLD), contype=contype,
+        conaffinity=conaffinity, condim=condim, group=2, mass=0.0,
     )
     band.fluid_ellipsoid = 1.0
     band.fluid_coefs = list(DRAG_COEFS)
@@ -268,6 +272,15 @@ def install_on_spec(spec: Any, ballast: Ballast) -> None:
             size=[0.01, 0, 0], pos=[x * 1.02, y * 1.02, 0.0],
             rgba=list(RUBY), contype=0, conaffinity=0, group=2, mass=0.0,
         )
+
+
+def _torso_collision(base: Any, spec: Any) -> tuple[int, int, int]:
+    """The torso's collision bits, read off its colliding geom rather than copied:
+    upstream assigns them per entity, and a hard-coded copy would drift silently."""
+    for geom in spec.geoms:
+        if geom.parent.name == base.name and (geom.contype or geom.conaffinity):
+            return int(geom.contype), int(geom.conaffinity), int(geom.condim)
+    raise RuntimeError(f"{base.name} has no colliding geom to copy collision bits from")
 
 
 def whole_robot_beta(model: Any, base: str = "robot/base_link") -> float:

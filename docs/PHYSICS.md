@@ -141,7 +141,11 @@ of mass high and make the robot capsize.
 The tank fill is constant within a run. Changing it at run time (diving,
 surfacing, trimming) is the next step and will keep the keel fixed.
 
-**Not modelled:** the crown and keel do not collide with anything (visual geoms).
+**Collision.** The crown's cylinder collides exactly as the torso does — its
+collision bits are copied from the torso's colliding geom at build time: with the
+ground and props, not with the robot's own limbs. The keel has no collision: it
+lies inside the torso's hull, which meets anything first. Cost: none measurable
+(section 9).
 
 ## 6. Drag and current
 
@@ -223,6 +227,7 @@ On the real Jumper model:
 | Standing at HOME under the policy's PD gains | ground load `(1 - beta) M g` (within 0.2% of weight) at beta 0.8 and 0.95 |
 | Whole robot, free water, no drag | centre of mass accelerates at `-(1 - beta) g` on both simulators |
 | Rolled 30 deg | restoring moment with the kit; uniform model has none beyond `(1 - beta)` of land |
+| Dropped upside down (buoyancy zeroed) | rests on the crown; control without crown collision sinks into the floor |
 | Through the real task and scene path | `beta`, kit, drag flags, density and current reach the compiled model under any `--scene` |
 
 ## 9. Measurements
@@ -233,7 +238,13 @@ Workstation: RTX PRO 6000 Blackwell, Ryzen 9 9950X3D; MuJoCo 3.11.0, MuJoCo Warp
 **Training cost**, `ocean.posture`, 4096 environments, per PPO iteration
 (2026-10-24): land 1.31 s; water (`full`, ellipsoid drag) 1.74 s (+33%). The
 earlier inertia-box drag cost 1.36 s; the ellipsoid model evaluates every
-colliding geom.
+colliding geom. Adding the crown's collision: 1.72 s, no measurable change.
+
+**Righting** (2026-10-24, native, beta 0.8, joints PD-held at HOME, no policy):
+dropped upside down from 0.35 m, the robot lands on its crown and the kit's
+moment turns it from inverted (body z-axis . world z = -1.00) to 0.48 (about 61
+deg from upright) within 2 s, where it stays propped on its legs. The moment
+rights the hull; legs held still stop it short.
 
 **Official `jumper.posture` policy, land vs water** (2026-10-24, `--nominal`, one
 run each, native backend, command script: forward 0.5 m/s, then sideways 0.3 m/s,
@@ -256,6 +267,6 @@ reduced traction, and how much is the kit's added mass (5.5 kg against 2.5 kg).
 3. Centre of buoyancy per link at the link's centre of mass (section 4).
 4. Drag: ellipsoid approximation per geom, overlapping hulls double-exposed, no
    added mass, no lift (section 6).
-5. The kit is welded and visual-only; the official policy was never trained with
-   its mass.
+5. The kit is welded; the crown does not collide with the robot's own limbs; the
+   official policy was never trained with the kit's mass.
 6. Fully submerged only; no water surface.
