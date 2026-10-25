@@ -10,7 +10,7 @@ simulation despite buoyancy and currents.
 | `jumper/` | The upstream [Jumper](https://github.com/KingKongRobotics/jumper) repository (Apache-2.0), merged with its history. Training, replay, assets. |
 | `oceanking/` | OceanKing's own code: `hydro.py`, `buoyancy.py` (underwater physics), `trajectory.py`, `tasks/`, `scenes/`, `tools/`, `data/`. |
 | `tests/` | OceanKing's tests. |
-| `docs/` | OceanKing's own documents; [`PHYSICS.md`](docs/PHYSICS.md) is the physics specification. |
+| `docs/` | OceanKing's own documents: [`PHYSICS.md`](docs/PHYSICS.md) (physics specification), [`TRAINING.md`](docs/TRAINING.md) (training specification). |
 | `upstream/` | Bugs found upstream and the material for reporting/fixing them there (e.g. a MuJoCo Warp PR). |
 | `scratch/` | Disposable experiments and outputs (git-ignored; may be deleted at any time). |
 
