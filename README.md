@@ -11,6 +11,7 @@ simulation despite buoyancy and currents.
 | `oceanking/` | OceanKing's own code: `hydro.py`, `buoyancy.py` (underwater physics), `trajectory.py`, `tasks/`, `scenes/`, `tools/`, `data/`. |
 | `tests/` | OceanKing's tests. |
 | `docs/` | OceanKing's own documents; [`PHYSICS.md`](docs/PHYSICS.md) is the physics specification. |
+| `upstream/` | Bugs found upstream and the material for reporting/fixing them there (e.g. a MuJoCo Warp PR). |
 | `scratch/` | Disposable experiments and outputs (git-ignored; may be deleted at any time). |
 
 ### How OceanKing plugs into Jumper

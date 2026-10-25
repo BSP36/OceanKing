@@ -1,0 +1,59 @@
+diff --git a/mujoco_warp/_src/passive.py b/mujoco_warp/_src/passive.py
+index 2043be2a..aefe9610 100644
+--- a/mujoco_warp/_src/passive.py
++++ b/mujoco_warp/_src/passive.py
+@@ -557,8 +557,10 @@ def _fluid_force(
+       lfrc_force *= coef
+ 
+       # map force/torque from local to world frame: lfrc -> bfrc
+-      torque_global += geom_rot @ lfrc_torque
+-      force_global += geom_rot @ lfrc_force
++      geom_force = geom_rot @ lfrc_force
++      # the geom force acts at the geom, the body wrench is applied at xipos
++      torque_global += geom_rot @ lfrc_torque + wp.cross(geom_pos - xipos, geom_force)
++      force_global += geom_force
+ 
+     fluid_applied_out[worldid, bodyid] = wp.spatial_vector(force_global, torque_global)
+     return
+diff --git a/mujoco_warp/_src/passive_test.py b/mujoco_warp/_src/passive_test.py
+index e82e3a93..0d7771db 100644
+--- a/mujoco_warp/_src/passive_test.py
++++ b/mujoco_warp/_src/passive_test.py
+@@ -192,6 +192,37 @@ class PassiveTest(parameterized.TestCase):
+ 
+     self.assertLess(max_err, 5e-4)
+ 
++  def test_ellipsoid_fluid_offset_geoms(self):
++    """Tests ellipsoid fluid forces for geoms away from their body's center of mass."""
++    _, mjd, m, d = test_data.fixture(
++      xml="""
++      <mujoco>
++        <option density="1000" viscosity="0.001" wind="0.3 -0.1 0"/>
++        <worldbody>
++          <body>
++            <freejoint/>
++            <geom type="sphere" size="0.02" mass="1" contype="0" conaffinity="0"/>
++            <geom type="box" size="0.05 0.02 0.03" pos="0.2 0.05 0" euler="0 0 30"
++                  fluidshape="ellipsoid" contype="0" conaffinity="0"/>
++            <geom type="capsule" size="0.02 0.08" pos="-0.15 0 0.1" euler="40 0 0"
++                  fluidshape="ellipsoid" contype="0" conaffinity="0"/>
++            <body pos="0 0.2 0">
++              <joint type="hinge" axis="1 0 0"/>
++              <geom type="ellipsoid" size="0.03 0.08 0.01" pos="0 0.1 0"
++                    fluidshape="ellipsoid" contype="0" conaffinity="0"/>
++            </body>
++          </body>
++        </worldbody>
++      </mujoco>
++      """,
++      qvel_noise=1.0,
++    )
++
++    d.qfrc_fluid.fill_(wp.inf)
++    mjw.passive(m, d)
++
++    _assert_eq(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, "qfrc_fluid")
++
+   def test_fluid_zero_mass_body(self):
+     """Tests fluid forces for zero mass body."""
+     _, mjd, m, d = test_data.fixture(

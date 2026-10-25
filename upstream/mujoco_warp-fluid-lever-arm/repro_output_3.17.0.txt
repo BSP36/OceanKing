@@ -1,0 +1,10 @@
+mujoco 3.17.0, mujoco-warp 3.17.0, warp 1.18.0
+offset geom, translating: DIFFER
+  MuJoCo       qfrc_fluid [ 0.     -2.3562  0.      0.      0.     -0.4712]
+  MuJoCo Warp  qfrc_fluid [ 0.     -2.3562  0.      0.      0.     -0.    ]
+two geoms, spinning: DIFFER
+  MuJoCo       qfrc_fluid [ 0.     0.     0.     0.     0.    -0.246]
+  MuJoCo Warp  qfrc_fluid [ 0.      0.      0.      0.      0.     -0.0085]
+geom at centre of mass (control): agree
+  MuJoCo       qfrc_fluid [ 0.0132 -2.3562  0.      0.      0.     -0.0042]
+  MuJoCo Warp  qfrc_fluid [ 0.0132 -2.3562  0.      0.      0.     -0.0042]
