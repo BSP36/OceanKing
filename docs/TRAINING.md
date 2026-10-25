@@ -1,7 +1,20 @@
 # OceanKing training specification (draft)
 
-**Status: agreed, 2026-10-25; not yet implemented.** Decisions taken: the actor sees the
-current (option A, single run); training on `seabed_rock` only, sand in evaluation only.
+**Status: implemented 2026-10-25 (task `ocean.walk`), not yet trained.** Decisions taken: the
+actor sees the current (option A, single run); training on `seabed_rock` only, sand in evaluation
+only; beyond the traction limit the crab may be carried away.
+
+Implementation: [`oceanking/tasks/ocean/walk/`](../oceanking/tasks/ocean/walk) (the task, every
+number in its `env_cfg.py`), [`oceanking/water.py`](../oceanking/water.py) (per-environment water,
+observations, scaled rewards, metrics), [`oceanking/tools/expand_checkpoint.py`](../oceanking/tools/expand_checkpoint.py)
+(starting checkpoint). Tests: [`tests/test_water.py`](../tests/test_water.py).
+
+```bash
+.venv/bin/python -m oceanking.tools.expand_checkpoint scratch/official_expanded
+cd jumper
+../.venv/bin/python scripts/train.py --task ocean.walk --scene seabed_rock \
+    --checkpoint ../scratch/official_expanded/model_74800.pt --max-iterations 3000 --headless
+```
 
 The physics this trains against is [`PHYSICS.md`](PHYSICS.md).
 
@@ -56,15 +69,19 @@ is exactly the official one; training only adds what the water needs.
 **Actor: upstream's nine terms, unchanged, plus two.** Upstream (`jumper.posture`, 415 values):
 `base_ang_vel` (3), `projected_gravity` (3), `joint_pos`, `joint_vel`, `actions` and
 `actuator_force` (5-frame strided histories, 100 each), `command` (3), `gait_phase` (2),
-`posture_command` (4); noise on the IMU terms as upstream. Added (418 in total):
+`posture_command` (4); noise on the IMU terms as upstream. Added (419 in total):
 
 | Term | Dim | Meaning | Noise | Realism |
 |---|---|---|---|---|
 | `buoyancy_ratio` | 1 | the robot's current beta | none | known on a real robot: the keel is fixed and the crown tank's fill is the robot's own state |
-| `current_body` | 2 | water velocity at the robot, in its yaw (heading) frame | uniform ±0.03 m/s | an onboard flow sensor (decided 2026-10-25; stated in the report) |
+| `current_body` | 3 | water velocity at the robot, in its yaw (heading) frame: forward, left, up (up is 0 here; three components because upstream's symmetry augmentation mirrors 3-vectors) | uniform ±0.03 m/s | an onboard flow sensor (decided 2026-10-25; stated in the report) |
 
-**Critic: upstream's fifteen terms** (including the true base linear velocity, foot contacts and
-contact forces), **plus** `buoyancy_ratio`, `current_body` without noise, and the ground's friction.
+**Critic: upstream's fifteen terms** (602 values, including the true base linear velocity, foot
+contacts and contact forces), **plus** `buoyancy_ratio`, `current_body` without noise, and the
+ground's friction (607 in total).
+
+Upstream mirrors every sample left-right (symmetry augmentation): beta and friction are scalars,
+the current a 3-vector whose left component negates.
 
 ## 4. Randomisation (per environment, resampled at every reset)
 
@@ -147,7 +164,12 @@ for the cell (whether the command was physically possible). Policies: official a
 
 ## 10. Budget and schedule
 
-Measured: 1.88 s per iteration at 4096 environments on flat ground (PHYSICS.md §11).
+Measured (2026-10-25, 4096 environments, `ocean.walk` on `seabed_rock`, resumed from the expanded
+official checkpoint): **3.47 s per iteration**, i.e. about 1 h per 1000 iterations.
+
+What a resumed run starts from (verified): iteration 74800, the command curriculum at level 5 of 5
+and the posture curriculum at level 3, as the official run left them; the expanded actor's
+actions equal the official actor's exactly whatever the water columns read.
 
 | Dates | Work |
 |---|---|

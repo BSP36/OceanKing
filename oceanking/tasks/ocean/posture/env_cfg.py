@@ -11,6 +11,7 @@ from oceanking.hydro import HydroCfg, install
 
 from ...jumper.common.assets import JUMPER_XML
 from ...jumper.posture.env_cfg import env_cfg as posture_env_cfg
+from ..common import add_trajectory, make_nominal
 
 
 def env_cfg(
@@ -41,47 +42,8 @@ def env_cfg(
     install(cfg, hydro)
     print(f"[oceanking] {hydro.describe()}")
     if nominal:
-        if not play:
-            raise ValueError(
-                "--nominal (or OCEAN_NOMINAL) is for replays: in training it would "
-                "silently remove the startup randomisation"
-            )
-        _make_nominal(cfg)
+        make_nominal(cfg, play)
     if trajectory_out:
-        if not play:
-            raise ValueError("--trajectory-out is for replays; training does not record")
-        from mjlab.managers.event_manager import EventTermCfg
-
-        from oceanking.trajectory import TrajectoryRecorder
-
-        cfg.events["oceanking_trajectory"] = EventTermCfg(
-            func=TrajectoryRecorder,
-            mode="step",
-            params={
-                "path": trajectory_out,
-                "meta": {"task": "ocean.posture", "hydro": hydro.as_dict(),
-                         "summary": hydro.describe()},
-            },
-        )
+        add_trajectory(cfg, play, trajectory_out, {
+            "task": "ocean.posture", "hydro": hydro.as_dict(), "summary": hydro.describe()})
     return cfg
-
-
-#: Startup randomisation `--nominal` removes, leaving the asset's own values.
-_RANDOMISATION = ("foot_friction", "encoder_bias", "base_com")
-#: Fixed spawn height above the ground, m (mid of upstream's 0.01-0.05 range).
-_NOMINAL_SPAWN_Z = 0.03
-
-
-def _make_nominal(cfg: ManagerBasedRlEnvCfg) -> None:
-    """One robot, one start: what a side-by-side comparison of conditions needs.
-
-    Measured 2026-10-24: with upstream's replay randomisation left on, the same
-    command script at beta 0.8 + 0.15 m/s cross-current walked 0.19 m/s in one
-    run and 0.32 m/s in the next.
-    """
-    for name in _RANDOMISATION:
-        cfg.events.pop(name, None)
-    reset = cfg.events["reset_base"].params
-    reset["pose_range"] = {"x": (0.0, 0.0), "y": (0.0, 0.0),
-                           "z": (_NOMINAL_SPAWN_Z, _NOMINAL_SPAWN_Z), "yaw": (0.0, 0.0)}
-    reset["velocity_range"] = {}
