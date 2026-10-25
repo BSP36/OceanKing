@@ -24,6 +24,9 @@ SCHEMA = "oceanking-trajectory/1"
 
 class TrajectoryRecorder:
     def __init__(self, cfg: Any, env: Any) -> None:
+        # The given path is a stem: ".npz" / ".json" are appended, never substituted
+        # (`with_suffix` turned "b0.75_mu0.4" into "b0.75_mu0.npz", so runs that
+        # differed after the last dot overwrote each other).
         self._path = Path(cfg.params["path"])
         self._meta = dict(cfg.params.get("meta", {}))
         self._step_dt = float(env.step_dt)
@@ -54,8 +57,9 @@ class TrajectoryRecorder:
         if not self._t:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        npz = self._path.parent / (self._path.name + ".npz")
         np.savez_compressed(
-            self._path.with_suffix(".npz"),
+            npz,
             t=np.asarray(self._t),
             root_pos=np.stack(self._pos, axis=1),
             root_quat_wxyz=np.stack(self._quat, axis=1),
@@ -76,7 +80,7 @@ class TrajectoryRecorder:
             },
             **self._meta,
         }
-        self._path.with_suffix(".json").write_text(
+        (self._path.parent / (self._path.name + ".json")).write_text(
             json.dumps(meta, indent=2) + "\n", encoding="utf-8"
         )
-        print(f"[oceanking] trajectory {self._path.with_suffix('.npz')}")
+        print(f"[oceanking] trajectory {npz}")

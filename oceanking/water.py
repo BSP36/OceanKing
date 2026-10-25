@@ -271,22 +271,48 @@ def feasible_velocity(env: Any, command_name: str = "twist",
 # ── rewards and metrics ─────────────────────────────────────────────────────
 
 
+def feasible_error_sq(command: torch.Tensor, actual: torch.Tensor, centre: torch.Tensor,
+                      radius: torch.Tensor) -> torch.Tensor:
+    """Squared tracking error against what the physics allows, [N].
+
+    A command inside the reachable disk is tracked as upstream does. For one
+    outside it, the velocity relative to the water is split along and across the
+    direction towards the command: across is error; along, falling short of the
+    limit is error, and so is passing the command itself, but anything between
+    is not. So a margin set conservatively (the limit is an estimate) never caps
+    a policy that can do better."""
+    offset = command - centre
+    dist = torch.linalg.norm(offset, dim=1)
+    inside = dist <= radius
+    u = offset / dist.clamp_min(1e-9).unsqueeze(1)
+    rel = actual - centre
+    along = (rel * u).sum(dim=1)
+    across = rel - along.unsqueeze(1) * u
+    outside = (across.square().sum(dim=1) + torch.relu(radius - along).square()
+               + torch.relu(along - dist).square())
+    within = (command - actual).square().sum(dim=1)
+    return torch.where(inside, within, outside)
+
+
 def track_feasible_velocity(env: Any, std: float, command_name: str,
                             margin: float = 1.0) -> torch.Tensor:
-    """Upstream's `track_linear_velocity`, against the feasible target instead of
-    the command: full marks for the best the physics allows (docs/TRAINING.md
+    """Upstream's `track_linear_velocity`, scored against what the physics allows
+    (`feasible_error_sq`): full marks for the best possible (docs/TRAINING.md
     section 6). Same form and the same `std`, which upstream's curriculum sets."""
-    target, _ = feasible_velocity(env, command_name, margin)
+    cmd = env.command_manager.get_command(command_name)[:, :2]
     actual = env.scene["robot"].data.root_link_lin_vel_b
-    error = torch.sum(torch.square(target - actual[:, :2]), dim=1) + torch.square(actual[:, 2])
-    return torch.exp(-error / std**2)
+    error = feasible_error_sq(cmd, actual[:, :2], current_body(env)[:, :2],
+                              traction_limit(env, margin))
+    return torch.exp(-(error + actual[:, 2].square()) / std**2)
 
 
 def feasible_tracking_error(env: Any, command_name: str = "twist",
                             margin: float = 1.0) -> torch.Tensor:
-    target, _ = feasible_velocity(env, command_name, margin)
+    """sqrt of `feasible_error_sq`, m/s: what the tracking reward is charging."""
+    cmd = env.command_manager.get_command(command_name)[:, :2]
     actual = env.scene["robot"].data.root_link_lin_vel_b[:, :2]
-    return torch.linalg.norm(target - actual, dim=1)
+    return feasible_error_sq(cmd, actual, current_body(env)[:, :2],
+                             traction_limit(env, margin)).sqrt()
 
 
 def command_feasible(env: Any, command_name: str = "twist", margin: float = 1.0) -> torch.Tensor:

@@ -48,8 +48,13 @@ head-on (PHYSICS.md §6.2; side-on is the same within 1%). Limit on `v_rel`, m/s
 | 0.90 | 0.22 | 0.24 | 0.27 | 0.31 | 0.38 |
 | 0.95 | 0.15 | 0.17 | 0.18 | 0.21 | 0.26 |
 
-A static estimate (all of the net weight on the feet); a gait that lifts feet carries the same net
-weight on fewer of them, so the total friction is the same. Evaluation reports, for each cell,
+A static estimate (all of the net weight on the feet). **Checked** (2026-10-25): a PD-held standing
+robot under a slowly rising head current starts to slide at 0.88–1.10 of it (creep of 1 cm,
+which includes the legs' elastic give). **Walking reaches less**: the official policy commanded
+0.8 m/s in still water on rock over beta 0.75–0.90 x friction 0.4–0.8 tops out at 0.67 of the
+limit forward (0.56–0.75) and 0.63 sideways (0.39–0.73), and its top speed correlates 0.99 with
+the limit: walking is traction-bound at about two thirds of the static figure (feet lift, legs
+swing through the water). Evaluation reports, for each cell,
 whether the command was within this limit, and "at the commanded velocity" is judged only there.
 
 **Beyond the limit the crab is allowed to be carried away** (decided 2026-10-25): no policy can
@@ -136,8 +141,22 @@ The term now tracks the **feasible target** instead of the command
 
 Same form, same `std` (still set by upstream's curriculum). Walking at the physical maximum
 towards an impossible command is full marks; drifting at the least possible speed in a current
-the feet cannot hold is full marks too. `v_lim` is the static estimate; `TRACTION_MARGIN`
-(1.0) scales it if walking proves to hold less.
+the feet cannot hold is full marks too.
+
+**Refined (2026-10-25), after measuring what walking reaches (section 1):**
+
+- the limit is scaled by `TRACTION_MARGIN = 0.65`, the measured walking fraction of the static
+  limit (forward 0.67, sideways 0.63);
+- **one-sided beyond the target**: for a command outside the disk, the velocity relative to the
+  water is split along and across the direction towards the command. Across is error; along,
+  falling short of the target is error and so is passing the command itself, but anything in
+  between is not. A conservative margin therefore never caps a policy that learns to walk faster
+  than the official one did.
+
+The second run (iteration 75800, before this refinement, margin 1.0) already walked sideways
+1.6x faster than the first and drifted less than the official policy in currents, but walked
+forward slower than the official policy (0.17 against 0.23 m/s, rock, beta 0.8, still water):
+the target it was chasing, the static limit, is a third above what walking can reach.
 
 ### 6.2 Foot loads follow the net weight
 

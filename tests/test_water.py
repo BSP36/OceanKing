@@ -221,3 +221,48 @@ def test_the_walk_task_tracks_the_feasible_velocity():
     track = cfg.rewards["track_linear_velocity"]
     assert track.func is water.track_feasible_velocity
     assert set(track.params) == {"std", "command_name", "margin"}  # std: upstream's curriculum
+
+
+def test_trajectory_paths_keep_their_dots(tmp_path):
+    """A stem like "b0.75_mu0.4" must not lose ".4" to the file extension."""
+    from oceanking.trajectory import TrajectoryRecorder
+
+    rec = TrajectoryRecorder.__new__(TrajectoryRecorder)
+    rec._path, rec._meta, rec._step_dt = tmp_path / "b0.75_mu0.4", {}, 0.005
+    rec._t, rec._pos = [0.0], [np.zeros((1, 3))]
+    rec._quat, rec._cmd, rec._episode_step = [np.zeros((1, 4))], [np.zeros((1, 3))], [np.zeros(1)]
+    rec.save()
+    assert (tmp_path / "b0.75_mu0.4.npz").is_file() and (tmp_path / "b0.75_mu0.4.json").is_file()
+
+
+def test_beyond_the_target_faster_towards_the_command_is_not_charged():
+    """Limit 0.2 in still water, command 0.8 forward: walking at 0.2, 0.3 or 0.8
+    costs nothing; 0.1 costs the shortfall; 0.9 the overshoot; drifting sideways
+    costs its sideways part. Control: inside the disk it is upstream's error."""
+    from oceanking.water import feasible_error_sq
+
+    z = torch.zeros(1, 2)
+    r = torch.tensor([0.2])
+    cmd = torch.tensor([[0.8, 0.0]])
+    def err(vx, vy=0.0):
+        return feasible_error_sq(cmd, torch.tensor([[vx, vy]]), z, r).item()
+    assert err(0.2) == err(0.3) == err(0.8) == 0.0
+    assert err(0.1) == pytest.approx(0.01)
+    assert err(0.9) == pytest.approx(0.01)
+    assert err(0.3, 0.05) == pytest.approx(0.0025)
+    inside = feasible_error_sq(torch.tensor([[0.1, 0.0]]), torch.tensor([[0.15, 0.0]]), z,
+                               torch.tensor([0.2])).item()
+    assert inside == pytest.approx(0.0025)
+
+
+def test_in_a_head_current_the_disk_moves_downstream():
+    """Head current 0.2 (centre at -0.2 in the body frame), limit 0.3: the most
+    one can walk forward over the ground is 0.1; standing still is reachable."""
+    from oceanking.water import feasible_error_sq
+
+    centre, r = torch.tensor([[-0.2, 0.0]]), torch.tensor([0.3])
+    fwd = torch.tensor([[0.8, 0.0]])
+    assert feasible_error_sq(fwd, torch.tensor([[0.1, 0.0]]), centre, r).item() == 0.0
+    assert feasible_error_sq(fwd, torch.tensor([[0.0, 0.0]]), centre, r).item() == pytest.approx(0.01)
+    stand = torch.zeros(1, 2)
+    assert feasible_error_sq(stand, torch.tensor([[-0.05, 0.0]]), centre, r).item() == pytest.approx(0.0025)

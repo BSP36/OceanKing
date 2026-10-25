@@ -34,9 +34,15 @@ FRICTION_RANGE = (0.4, 0.8)
 BASE_COM_SCALE = 0.5
 #: Flow-sensor noise on the observed current, m/s (uniform, +/-).
 CURRENT_NOISE = 0.03
-#: Multiplier on the static traction limit in the feasible-velocity target (1: the
-#: limit as estimated; below 1 if walking turns out to hold less than standing).
-TRACTION_MARGIN = 1.0
+#: Multiplier on the static traction limit in the feasible-velocity target. The
+#: static limit itself holds (a PD-held robot slides at 0.88-1.10 of it, measured
+#: 2026-10-25); walking reaches less. The official policy's top speed, commanded
+#: 0.8 m/s in still water on rock over beta 0.75-0.9 x friction 0.4-0.8, was
+#: 0.67 (0.56-0.75) of the limit forward and 0.63 (0.39-0.73) sideways, correlating
+#: 0.99 with it: walking is traction-bound, at about two thirds of the static
+#: figure. The reward is one-sided beyond the target, so a policy that walks
+#: faster is not held back by this figure.
+TRACTION_MARGIN = 0.65
 #: Upstream's foot-load thresholds, N, scaled per environment by its net weight.
 STANCE_LOAD_N = 5.0
 STANCE_LOAD_STAND_N = 3.0
