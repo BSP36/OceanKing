@@ -16,8 +16,12 @@ from oceanking.hydro import HydroCfg as _HydroCfg
 from oceanking.hydro import apply_to_spec
 
 
-def HydroCfg(**kw) -> _HydroCfg:  # noqa: N802 - these box tests use the uniform model
+def HydroCfg(**kw) -> _HydroCfg:  # noqa: N802
+    """These box tests use the uniform model, MuJoCo's raw drag (no Jumper
+    calibration) and no added mass, which needs Jumper's link volumes."""
     kw.setdefault("buoyancy_model", "uniform")
+    kw.setdefault("drag_calibration", 1.0)
+    kw.setdefault("added_mass_coef", 0.0)
     return _HydroCfg(**kw)
 
 G = 9.81

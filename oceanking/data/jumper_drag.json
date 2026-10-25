@@ -1,0 +1,27 @@
+{
+  "fingerprint": {
+    "model_sha256": "3342ca15a5bbcaf40e1f16dedb60044b91360dddae5f7f03f05eb3e6c830cf37",
+    "crown_outer_volume_m3": 0.00097723
+  },
+  "cd_target_head_on": 1.0,
+  "speed_m_s": 0.3,
+  "head_on_x": {
+    "silhouette_m2": 0.055077,
+    "raw_CdA_m2": 0.1707493187966484,
+    "raw_Cd": 3.1001927991112153,
+    "calibrated_Cd": 1.0
+  },
+  "side_on_y": {
+    "silhouette_m2": 0.042204,
+    "raw_CdA_m2": 0.1694193396691552,
+    "raw_Cd": 4.014295793506663,
+    "calibrated_Cd": 1.2948535957691112
+  },
+  "heave_z": {
+    "silhouette_m2": 0.069152,
+    "raw_CdA_m2": 0.1946780497003025,
+    "raw_Cd": 2.8152193674847075,
+    "calibrated_Cd": 0.9080788034511255
+  },
+  "calibration_factor": 0.3225605840664771
+}

@@ -63,32 +63,61 @@ def test_sealed_jumper_floats():
     assert table["sealed_buoyancy_ratio_fresh_water"] == pytest.approx(1.346, abs=0.005)
 
 
+N_LINKS = len(B.link_table()["links"])
+
+
 @pytest.mark.parametrize("beta,air", [(0.8, 0.5), (0.9, 0.0), (0.95, 1.0)])
 def test_the_compiled_robot_has_the_requested_beta(beta, air):
+    """Weight minus buoyancy of the compiled model is (1 - beta) M g, M the
+    physical mass (robot, keel, crown with its water)."""
     cfg = HydroCfg(mode="buoyancy", buoyancy_ratio=beta, crown_air=air)
     m = _robot(cfg, floor=False)
-    assert B.whole_robot_beta(m, "base_link") == pytest.approx(beta, rel=1e-9)
     ballast = cfg.ballast()
-    assert m.body_mass.sum() == pytest.approx(ballast.total_mass, rel=1e-9)
+    assert B.net_weight(m, "base_link") == pytest.approx(
+        (1.0 - beta) * ballast.total_mass * G, rel=1e-6)
+    assert m.body_mass.sum() == pytest.approx(
+        ballast.total_mass + N_LINKS * B.COB_MASS, rel=1e-9)
     assert ballast.beta_at(air) == pytest.approx(beta, rel=1e-12)
 
 
-def test_each_link_carries_its_own_volume():
-    cfg = HydroCfg(mode="buoyancy", buoyancy_ratio=0.8)
-    m = _robot(cfg, floor=False)
-    for name, entry in B.link_table()["links"].items():
-        i = m.body(name).id
-        assert m.body_mass[i] * m.body_gravcomp[i] == pytest.approx(
-            1000.0 * entry["volume_m3"], rel=1e-9, abs=1e-12
-        ), name
-
-
-def test_the_keel_adds_mass_and_no_buoyancy_and_the_crown_floats():
+def test_each_link_is_lifted_at_its_own_centre_of_buoyancy():
+    """Each link's buoyancy acts at the centroid of its measured volume, not at
+    its centre of mass, and lifts exactly rho V; the link itself carries none."""
     m = _robot(HydroCfg(mode="buoyancy", buoyancy_ratio=0.8), floor=False)
-    keel, crown = m.body("oceanking_keel").id, m.body("oceanking_crown").id
-    assert m.body_gravcomp[keel] == 0.0
-    assert m.body_gravcomp[crown] > 1.0
-    assert m.body_mass[keel] == pytest.approx(HydroCfg(buoyancy_ratio=0.8).ballast().keel_mass)
+    for name, entry in B.link_table()["links"].items():
+        link, point = m.body(name).id, m.body(f"{name}_cob").id
+        assert m.body_parentid[point] == link
+        assert m.body_gravcomp[link] == 0.0
+        lift = (m.body_gravcomp[point] - 1.0) * m.body_mass[point]
+        assert lift == pytest.approx(1000.0 * entry["volume_m3"], rel=1e-9, abs=1e-12), name
+        np.testing.assert_allclose(m.body_pos[point], entry["centre_of_buoyancy_body_m"],
+                                   atol=1e-12)
+
+
+def test_buoyancy_points_feel_negligible_drag_and_the_keel_none():
+    """A massive body with no flagged geom falls back to MuJoCo's inertia-box drag
+    model. The keel is flagged with zero coefficients; the buoyancy points are
+    left on the inertia-box model, sized so that all of them together feel under
+    0.1% of the robot's drag."""
+    m = _robot(HydroCfg(mode="full", buoyancy_ratio=0.8), floor=False)
+    fluid = m.geom_fluid.reshape(m.ngeom, -1)
+    keel = m.body("oceanking_keel").id
+    flagged = [g for g in range(m.ngeom) if m.geom_bodyid[g] == keel and fluid[g, 0] > 0]
+    assert flagged and not any(fluid[g, 1:6].any() for g in flagged)
+
+    from oceanking import drag
+
+    rho, v = 1000.0, 1.0
+    points = 0.0
+    for b in range(m.nbody):
+        if m.body(b).name.endswith("_cob"):
+            i, mass = m.body_inertia[b], m.body_mass[b]
+            box = [math.sqrt(max(i[(k + 1) % 3] + i[(k + 2) % 3] - i[k], 0) * 6 / mass)
+                   for k in range(3)]
+            points += 0.5 * rho * max(box[0] * box[1], box[1] * box[2], box[0] * box[2]) * v**2
+    head = drag._table()["head_on_x"]
+    robot = 0.5 * rho * head["calibrated_Cd"] * head["silhouette_m2"] * v**2
+    assert points < 1e-3 * robot
 
 
 @pytest.mark.parametrize("beta", [0.8, 0.95])
@@ -110,7 +139,7 @@ def test_standing_load_is_weight_minus_buoyancy(beta):
                 mujoco.mj_contactForce(m, d, i, f)
                 total += f[0]
             loads.append(total)
-    weight = m.body_mass.sum() * G
+    weight = HydroCfg(buoyancy_ratio=beta).ballast().total_mass * G
     # Tolerance against the full weight: near neutral the net load is small, and
     # the residual sway of a PD-held stance (a few mN) is not a buoyancy error.
     assert np.mean(loads) == pytest.approx((1.0 - beta) * weight, abs=2e-3 * weight)
@@ -149,13 +178,27 @@ def test_negative_ballast_is_refused():
         HydroCfg(buoyancy_ratio=2.0, crown_air=1.0).ballast()
 
 
-def test_off_and_drag_only_leave_the_robot_as_upstream_built_it():
+def test_off_leaves_the_robot_as_upstream_built_it():
     land = _robot(None)
-    for mode in ("off", "drag"):
-        m = _robot(HydroCfg(mode=mode, buoyancy_ratio=0.8))
-        assert m.nbody == land.nbody
-        np.testing.assert_array_equal(m.body_mass, land.body_mass)
-        np.testing.assert_array_equal(m.body_gravcomp, land.body_gravcomp)
+    m = _robot(HydroCfg(mode="off", buoyancy_ratio=0.8))
+    assert m.nbody == land.nbody
+    np.testing.assert_array_equal(m.body_mass, land.body_mass)
+    np.testing.assert_array_equal(m.body_gravcomp, land.body_gravcomp)
+
+
+def test_added_mass_grows_inertia_and_not_weight():
+    """Drag-only water: no kit, no buoyancy; each link gains C_a rho V of inertia
+    whose weight is compensated, so the net weight stays the land weight."""
+    land = _robot(None, floor=False)
+    m = _robot(HydroCfg(mode="drag", added_mass_coef=0.5), floor=False)
+    assert m.nbody == land.nbody
+    for name, entry in B.link_table()["links"].items():
+        i = m.body(name).id
+        dm = 0.5 * 1000.0 * entry["volume_m3"]
+        assert m.body_mass[i] == pytest.approx(land.body_mass[i] + dm, rel=1e-9)
+        scale = m.body_mass[i] / land.body_mass[i]
+        np.testing.assert_allclose(m.body_inertia[i], land.body_inertia[i] * scale, rtol=1e-9)
+    assert B.net_weight(m, "base_link") == pytest.approx(land.body_mass.sum() * G, rel=1e-9)
 
 
 @pytest.mark.parametrize("backend", ["native", "warp"])
@@ -223,3 +266,77 @@ def test_an_upside_down_robot_rests_on_its_crown():
     assert contacts > 0 and bottom > -0.005
     bottom, contacts = _upside_down_crown_bottom(collide=False)
     assert contacts == 0 and bottom < -0.02
+
+
+@pytest.mark.parametrize("backend", ["native", "warp"])
+def test_added_mass_slows_the_sink(backend):
+    """With added mass the same net weight accelerates more mass: the centre of
+    mass sinks at (1 - beta) M g / (M + C_a rho V_total). Drag is zeroed so only
+    added mass differs from the free-fall test above."""
+    beta, ca, t = 0.85, 0.5, 0.1
+    cfg = HydroCfg(mode="full", buoyancy_ratio=beta, drag_scale=0.0, added_mass_coef=ca)
+    m = _robot(cfg, floor=False)
+    ballast = cfg.ballast()
+    added = ca * 1000.0 * ballast.total_volume
+    d = _home(m, z=1.0)
+    steps = round(t / m.opt.timestep)
+    if backend == "native":
+        for _ in range(steps):
+            mujoco.mj_step(m, d)
+    else:
+        wp = pytest.importorskip("warp")
+        mjwarp = pytest.importorskip("mujoco_warp")
+        wp.init()
+        with wp.ScopedDevice("cuda:0" if wp.is_cuda_available() else "cpu"):
+            wm, wd = mjwarp.put_model(m), mjwarp.put_data(m, d)
+            for _ in range(steps):
+                mjwarp.step(wm, wd)
+            d.qpos[:], d.qvel[:] = wd.qpos.numpy()[0], wd.qvel.numpy()[0]
+    mujoco.mj_forward(m, d)
+    mujoco.mj_subtreeVel(m, d)
+    com_vz = d.subtree_linvel[m.body("base_link").id][2]
+    expected = -(1.0 - beta) * ballast.total_mass * G / (
+        ballast.total_mass + added + N_LINKS * B.COB_MASS) * t
+    assert com_vz == pytest.approx(expected, rel=1e-3)
+    # Control: it is slower than without added mass.
+    assert abs(com_vz) < (1.0 - beta) * G * t * 0.8
+
+
+def test_kit_and_buoyancy_points_have_their_intended_inertial_frames():
+    """MjSpec leaves an explicit inertial's ipos unset (NaN) by default, and the
+    compiler then puts the centre of mass at the body's position *again*: a point
+    meant 49 mm out from its link landed 98 mm out (found 2026-10-25). Pin every
+    body this package adds."""
+    from oceanking import crown
+
+    m = _robot(HydroCfg(mode="buoyancy", buoyancy_ratio=0.8), floor=False)
+    for b in range(m.nbody):
+        name = m.body(b).name
+        if name.endswith("_cob") or name == "oceanking_keel":
+            np.testing.assert_array_equal(m.body_ipos[b], 0.0, err_msg=name)
+    np.testing.assert_allclose(m.body_ipos[m.body("oceanking_crown").id],
+                               [0.0, 0.0, crown.centre_height()], atol=1e-12)
+
+
+def test_the_keel_trims_the_robot_level():
+    """At HOME the whole robot's centre of mass lies under its centre of
+    buoyancy: no static pitch or roll moment. Control: the keel at the torso's
+    centre leaves an offset of several millimetres."""
+    from oceanking.tools.physics_report import _model
+
+    def offset(cfg):
+        m, d = _model(cfg)
+        lift = np.zeros(m.nbody)
+        for b in range(m.nbody):
+            if m.body(b).name.endswith("_cob"):
+                lift[b] = (m.body_gravcomp[b] - 1.0) * m.body_mass[b]
+            elif m.body(b).name == "oceanking_crown":
+                lift[b] = m.body_gravcomp[b] * m.body_mass[b]
+        phys = np.array([not m.body(b).name.endswith("_cob") for b in range(m.nbody)])
+        com = (m.body_mass[phys, None] * d.xipos[phys]).sum(0) / m.body_mass[phys].sum()
+        cob = (lift[:, None] * d.xipos).sum(0) / lift.sum()
+        return (cob - com)[:2]
+
+    for beta in (0.7, 0.8, 0.95):
+        np.testing.assert_allclose(offset(HydroCfg(mode="buoyancy", buoyancy_ratio=beta)),
+                                   0.0, atol=1e-6)

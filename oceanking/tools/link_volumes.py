@@ -78,10 +78,16 @@ def measure(xml: Path, samples_per_link: int, seed: int) -> dict:
         for j in range(i):
             covered |= tris[j].find_simplex(pts) >= 0
         own = 1.0 - covered.mean()
+        # Centre of buoyancy: the centroid of the credited (uncovered) part, in
+        # the link's own body frame so it moves with the link.
+        centroid = pts[~covered].mean(0) if (~covered).any() else pts.mean(0)
+        R = d.xmat[body].reshape(3, 3)
+        local = R.T @ (centroid - d.xpos[body])
         links[m.body(body).name] = {
             "mass_kg": float(m.body_mass[body]),
             "hull_volume_m3": float(hull_volume),
             "volume_m3": float(hull_volume * own),
+            "centre_of_buoyancy_body_m": local.tolist(),
         }
     # Torso bounds in the base frame (the free joint sits at the origin, unrotated,
     # so world and base frames coincide here): where the kit is mounted.
@@ -89,6 +95,14 @@ def measure(xml: Path, samples_per_link: int, seed: int) -> dict:
                        if m.body(b).name in ("base_link", "upper_shell_link")])
     total_mass = float(m.body_mass.sum())
     total_volume = sum(v["volume_m3"] for v in links.values())
+    # Whole-robot centres at HOME, base frame: what the kit is trimmed against.
+    com = (m.body_mass[:, None] * d.xipos).sum(0) / total_mass
+    cob = np.zeros(3)
+    for name, entry in links.items():
+        b = m.body(name).id
+        cob += entry["volume_m3"] * (
+            d.xpos[b] + d.xmat[b].reshape(3, 3) @ np.asarray(entry["centre_of_buoyancy_body_m"]))
+    cob /= total_volume
     return {
         "model": str(xml.relative_to(REPO)),
         "model_sha256": model_hash(xml),
@@ -100,6 +114,8 @@ def measure(xml: Path, samples_per_link: int, seed: int) -> dict:
         "total_volume_m3": total_volume,
         "sealed_buoyancy_ratio_fresh_water": 1000.0 * total_volume / total_mass,
         "torso_bounds_m": {"min": torso.min(0).tolist(), "max": torso.max(0).tolist()},
+        "home_centre_of_mass_m": com.tolist(),
+        "home_centre_of_buoyancy_m": cob.tolist(),
         "links": links,
     }
 

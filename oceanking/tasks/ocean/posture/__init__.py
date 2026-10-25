@@ -82,7 +82,17 @@ def cli_args(group):
         dest="drag_scale",
         type=float,
         default=float(env("OCEAN_DRAG_SCALE", "1.0")),
-        help="multiplier on the fluid density seen by the drag model (default: 1)",
+        help="multiplier on the calibrated drag, for sensitivity studies (default: 1, "
+        "or OCEAN_DRAG_SCALE)",
+    )
+    group.add_argument(
+        "--added-mass",
+        dest="added_mass_coef",
+        type=float,
+        default=float(env("OCEAN_ADDED_MASS", "0.5")),
+        metavar="CA",
+        help="added mass as a fraction of displaced water, on with drag "
+        "(default: 0.5, or OCEAN_ADDED_MASS)",
     )
     group.add_argument(
         "--nominal",
@@ -103,5 +113,5 @@ def cli_args(group):
     )
     return (
         "hydro_mode", "buoyancy_ratio", "buoyancy_model", "crown_air", "current", "drag_scale",
-        "nominal", "trajectory_out",
+        "added_mass_coef", "nominal", "trajectory_out",
     )

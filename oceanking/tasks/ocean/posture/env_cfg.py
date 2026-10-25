@@ -22,6 +22,7 @@ def env_cfg(
     crown_air: float = 0.5,
     current: tuple[float, float] = (0.0, 0.0),
     drag_scale: float = 1.0,
+    added_mass_coef: float = 0.5,
     nominal: bool = False,
     trajectory_out: str | None = None,
 ) -> ManagerBasedRlEnvCfg:
@@ -33,6 +34,7 @@ def env_cfg(
         crown_air=crown_air,
         current=(float(current[0]), float(current[1]), 0.0),
         drag_scale=drag_scale,
+        added_mass_coef=added_mass_coef,
     )
     if hydro.buoyancy_on and hydro.buoyancy_model == "archimedes":
         check_model(asset or JUMPER_XML)

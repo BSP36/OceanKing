@@ -15,7 +15,10 @@ Python in the step loop and nothing to clear on reset.
   slender and angular drag; lift terms off), with ``option.wind`` as the current,
   so it acts on the velocity relative to the water and depends on shape, not on
   how mass is distributed inside a body. It contains no buoyancy term, so it never
-  double-counts with gravcomp.
+  double-counts with gravcomp. Summed over overlapping geoms with no shielding it
+  overstates a body's drag, so it is calibrated (`oceanking.drag`).
+- **Added mass** (with drag): ``C_a rho V`` of extra inertia per link, its weight
+  compensated (`oceanking.buoyancy.add_added_mass`).
 """
 
 from __future__ import annotations
@@ -61,8 +64,18 @@ class HydroCfg:
     """Pa*s, the linear (Stokes) part of the drag model."""
 
     drag_scale: float = 1.0
-    """Multiplies the density the drag model sees. 1.0 is the inertia-box model
-    as MuJoCo defines it."""
+    """Multiplier on the calibrated drag. 1.0 is the calibration's target drag
+    coefficient (docs/PHYSICS.md); use it for sensitivity studies."""
+
+    drag_calibration: float | None = None
+    """Factor on the density MuJoCo's ellipsoid model sees, bringing the summed
+    per-geom drag to the target coefficient on the robot's silhouette. None reads
+    Jumper's measured value (`oceanking/data/jumper_drag.json`); 1.0 is MuJoCo's
+    raw model, for bodies other than Jumper."""
+
+    added_mass_coef: float = 0.5
+    """Added mass as a fraction of displaced water mass, on with drag (a
+    hydrodynamic effect). 0 switches it off."""
 
     current: tuple[float, float, float] = (0.0, 0.0, 0.0)
     """Uniform fluid velocity in the world frame, m/s."""
@@ -80,6 +93,10 @@ class HydroCfg:
             raise ValueError(f"crown_air must be in [0, 1], got {self.crown_air}")
         if self.water_density < 0.0 or self.water_viscosity < 0.0 or self.drag_scale < 0.0:
             raise ValueError("water_density, water_viscosity and drag_scale must be >= 0")
+        if self.added_mass_coef < 0.0:
+            raise ValueError(f"added_mass_coef must be >= 0, got {self.added_mass_coef}")
+        if self.drag_calibration is not None and self.drag_calibration <= 0.0:
+            raise ValueError(f"drag_calibration must be > 0, got {self.drag_calibration}")
         if len(self.current) != 3:
             raise ValueError(f"current must have three components, got {self.current}")
 
@@ -106,7 +123,10 @@ class HydroCfg:
         elif self.buoyancy_on:
             parts.append(f"uniform beta={self.buoyancy_ratio:g}")
         if self.drag_on:
-            parts.append(f"rho={self.water_density:g} drag_scale={self.drag_scale:g}")
+            parts.append(
+                f"rho={self.water_density:g} drag x{self.drag_scale:g} "
+                f"(calibration {self.calibration():.3f}) added_mass={self.added_mass_coef:g}"
+            )
             parts.append("current=({:g}, {:g}, {:g}) m/s".format(*self.current))
         return " ".join(parts)
 
@@ -116,6 +136,13 @@ class HydroCfg:
         from oceanking.buoyancy import solve_ballast
 
         return solve_ballast(self.buoyancy_ratio, self.crown_air, self.water_density)
+
+    def calibration(self) -> float:
+        if self.drag_calibration is not None:
+            return self.drag_calibration
+        from oceanking.drag import calibration_factor
+
+        return calibration_factor()
 
 
 def apply_to_spec(spec: Any, cfg: HydroCfg) -> None:
@@ -135,12 +162,15 @@ def apply_to_spec(spec: Any, cfg: HydroCfg) -> None:
 
         install_on_spec(spec, cfg.ballast())
     if cfg.drag_on:
-        from oceanking.buoyancy import set_drag_geoms
+        from oceanking.buoyancy import add_added_mass, set_drag_geoms
 
         set_drag_geoms(spec)
-        spec.option.density = cfg.water_density * cfg.drag_scale
-        spec.option.viscosity = cfg.water_viscosity
+        scale = cfg.drag_scale * cfg.calibration()
+        spec.option.density = cfg.water_density * scale
+        spec.option.viscosity = cfg.water_viscosity * scale
         spec.option.wind = list(cfg.current)
+        if cfg.added_mass_coef > 0.0:
+            add_added_mass(spec, cfg.added_mass_coef, cfg.water_density)
 
 
 def install(env_cfg: Any, cfg: HydroCfg) -> None:

@@ -30,22 +30,28 @@ ARGS = dict(
 )
 
 
-def _robot_mass_weighted_beta(m) -> float:
-    from oceanking.buoyancy import whole_robot_beta
+def _beta(m, args) -> float:
+    """1 - net weight / physical weight, the physical mass from the solved kit."""
+    from oceanking.buoyancy import net_weight
+    from oceanking.hydro import HydroCfg
 
-    return whole_robot_beta(m, "robot/base_link")
+    mass = HydroCfg(buoyancy_ratio=args["buoyancy_ratio"],
+                    crown_air=args["crown_air"]).ballast().total_mass
+    return 1.0 - net_weight(m, "robot/base_link") / (mass * 9.81)
 
 
 @pytest.mark.parametrize("scene", [None, "seabed", "studio"])
 def test_task_arguments_reach_the_model_under_any_scene(scene):
     m = _compile(ARGS, scene)
-    assert _robot_mass_weighted_beta(m) == pytest.approx(0.85)
+    assert _beta(m, ARGS) == pytest.approx(0.85, rel=1e-6)
     assert m.body("robot/oceanking_crown").id > 0
     # Drag is on the robot's colliding geoms after mjlab set their contype.
     flagged = m.geom_fluid.reshape(m.ngeom, -1)[:, 0] > 0
     robot = np.array([m.geom(g).name.startswith("robot/") for g in range(m.ngeom)])
     assert flagged[robot].sum() >= 41
-    assert m.opt.density == pytest.approx(2000.0)
+    from oceanking.drag import calibration_factor
+
+    assert m.opt.density == pytest.approx(2000.0 * calibration_factor())
     np.testing.assert_allclose(m.opt.wind, (0.1, -0.05, 0.0))
 
 
@@ -59,4 +65,5 @@ def test_off_is_upstream_posture():
     np.testing.assert_array_equal(off.body_mass, land.body_mass)
     assert off.opt.density == land.opt.density == 0.0
     # Control: the same comparison does see the water when it is on.
-    assert _robot_mass_weighted_beta(_compile(ARGS)) != _robot_mass_weighted_beta(land)
+    water = _compile(ARGS)
+    assert water.nbody != land.nbody and water.opt.density > 0.0
