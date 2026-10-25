@@ -48,6 +48,7 @@ class OceanState:
     current_w: torch.Tensor  # [N, 3] world frame, m/s
     friction: torch.Tensor  # [N]
     load_scale: torch.Tensor  # [N] underwater net weight / land weight
+    net_weight: torch.Tensor  # [N] N, weight minus buoyancy
     steps: int = 0
     current_max: float = 0.0
 
@@ -61,6 +62,7 @@ def ocean_state(env: Any) -> OceanState:
             current_w=torch.zeros((n, 3), device=dev),
             friction=torch.full((n,), float("nan"), device=dev),
             load_scale=torch.ones((n,), device=dev),
+            net_weight=torch.full((n,), float("nan"), device=dev),
         )
         env.ocean = state
     return state
@@ -112,7 +114,8 @@ class BuoyancyStartup:
         inertia = self._keel_inertia[None, :] * (keel / self._keel_mass)[:, None]
         model.body_inertia[env_ids, self._keel] = inertia.to(model.body_inertia.dtype)
         state.beta[env_ids] = b
-        state.load_scale[env_ids] = (1.0 - b) * total * G / self._land_weight
+        state.net_weight[env_ids] = (1.0 - b) * total * G
+        state.load_scale[env_ids] = state.net_weight[env_ids] / self._land_weight
 
 
 class WaterClock:
@@ -222,7 +225,72 @@ def ground_friction(env: Any, mirror_kind: str = "scalar") -> torch.Tensor:
     return ocean_state(env).friction.unsqueeze(1)
 
 
+# ── what the physics allows ─────────────────────────────────────────────────
+
+
+def drag_area() -> float:
+    """Cd * A of the standing robot, head-on, m^2 (side-on is the same within 1%)."""
+    from oceanking.drag import _table
+
+    head = _table()["head_on_x"]
+    return float(head["calibrated_Cd"] * head["silhouette_m2"])
+
+
+def traction_limit(env: Any, margin: float = 1.0, rho: float = 1000.0) -> torch.Tensor:
+    """Speed through the water at which drag equals the feet's friction, m/s, [N]:
+    ``v = margin * sqrt(2 mu (1 - beta) M g / (rho Cd A))`` (docs/TRAINING.md section 1)."""
+    state = ocean_state(env)
+    return margin * torch.sqrt(2.0 * state.friction * state.net_weight / (rho * drag_area()))
+
+
+def project_to_disk(command: torch.Tensor, centre: torch.Tensor,
+                    radius: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """The point of the disk (centre, radius) nearest each command, and whether
+    the command was inside. All [N, 2] / [N] in one frame."""
+    offset = command - centre
+    dist = torch.linalg.norm(offset, dim=1)
+    inside = dist <= radius
+    scale = torch.where(inside, torch.ones_like(dist), radius / dist.clamp_min(1e-9))
+    return centre + offset * scale.unsqueeze(1), inside
+
+
+def feasible_velocity(env: Any, command_name: str = "twist",
+                      margin: float = 1.0) -> tuple[torch.Tensor, torch.Tensor]:
+    """The ground velocity to track, body frame, [N, 2], and whether the command
+    itself was feasible, [N].
+
+    Through the water the feet hold up to the traction limit in any direction, so
+    the reachable ground velocities are a disk centred on the current, radius the
+    limit. A command inside it is the target; one outside is replaced by the
+    disk's nearest point: as fast as the physics allows towards the command."""
+    cmd = env.command_manager.get_command(command_name)[:, :2]
+    centre = current_body(env)[:, :2]
+    return project_to_disk(cmd, centre, traction_limit(env, margin))
+
+
 # ── rewards and metrics ─────────────────────────────────────────────────────
+
+
+def track_feasible_velocity(env: Any, std: float, command_name: str,
+                            margin: float = 1.0) -> torch.Tensor:
+    """Upstream's `track_linear_velocity`, against the feasible target instead of
+    the command: full marks for the best the physics allows (docs/TRAINING.md
+    section 6). Same form and the same `std`, which upstream's curriculum sets."""
+    target, _ = feasible_velocity(env, command_name, margin)
+    actual = env.scene["robot"].data.root_link_lin_vel_b
+    error = torch.sum(torch.square(target - actual[:, :2]), dim=1) + torch.square(actual[:, 2])
+    return torch.exp(-error / std**2)
+
+
+def feasible_tracking_error(env: Any, command_name: str = "twist",
+                            margin: float = 1.0) -> torch.Tensor:
+    target, _ = feasible_velocity(env, command_name, margin)
+    actual = env.scene["robot"].data.root_link_lin_vel_b[:, :2]
+    return torch.linalg.norm(target - actual, dim=1)
+
+
+def command_feasible(env: Any, command_name: str = "twist", margin: float = 1.0) -> torch.Tensor:
+    return feasible_velocity(env, command_name, margin)[1].float()
 
 
 def scaled_load(func: Any, base_threshold: float):

@@ -166,3 +166,58 @@ def test_the_expanded_checkpoint_acts_exactly_as_the_official_one(tmp_path):
     assert new["iter"] == off["iter"] and new["infos"] == off["infos"]
     shapes = [s["exp_avg"].shape for s in new["optimizer_state_dict"]["state"].values()]
     assert (512, 419) in shapes and (512, 607) in shapes
+
+
+# ── feasible-velocity target ────────────────────────────────────────────────
+
+
+def test_a_feasible_command_is_its_own_target():
+    from oceanking.water import project_to_disk
+
+    cmd = torch.tensor([[0.1, 0.0], [0.0, -0.05]])
+    target, inside = project_to_disk(cmd, torch.zeros(2, 2), torch.tensor([0.3, 0.3]))
+    torch.testing.assert_close(target, cmd)
+    assert inside.all()
+
+
+def test_an_infeasible_command_becomes_the_most_the_physics_allows_towards_it():
+    """Still water, limit 0.3: a 0.8 m/s command is tracked at 0.3 in its
+    direction. Head current 0.2 (centre at -0.2), limit 0.3: forward at most 0.1."""
+    from oceanking.water import project_to_disk
+
+    target, inside = project_to_disk(torch.tensor([[0.8, 0.0], [0.8, 0.0]]),
+                                     torch.tensor([[0.0, 0.0], [-0.2, 0.0]]),
+                                     torch.tensor([0.3, 0.3]))
+    torch.testing.assert_close(target, torch.tensor([[0.3, 0.0], [0.1, 0.0]]))
+    assert not inside.any()
+
+
+def test_standing_in_a_current_beyond_the_limit_is_scored_as_drifting():
+    """A current the feet cannot hold against (0.4 against a limit of 0.3): the
+    best possible is drifting downstream at 0.1, and that is the target."""
+    from oceanking.water import project_to_disk
+
+    target, inside = project_to_disk(torch.zeros(1, 2), torch.tensor([[0.0, -0.4]]),
+                                     torch.tensor([0.3]))
+    torch.testing.assert_close(target, torch.tensor([[0.0, -0.1]]))
+    assert not inside.item()
+
+
+def test_the_traction_limit_follows_the_physics(env):
+    from oceanking import water
+
+    limit = water.traction_limit(env).cpu().numpy()
+    o = env.ocean
+    expected = np.sqrt(2 * o.friction.cpu().numpy() * o.net_weight.cpu().numpy()
+                       / (1000.0 * water.drag_area()))
+    np.testing.assert_allclose(limit, expected, rtol=1e-5)
+    np.testing.assert_allclose(o.net_weight.cpu().numpy(), _net_weight(env), rtol=1e-4)
+
+
+def test_the_walk_task_tracks_the_feasible_velocity():
+    from oceanking import water
+
+    cfg = tasks.load_env_cfg("ocean.walk", play=False, task_args={})
+    track = cfg.rewards["track_linear_velocity"]
+    assert track.func is water.track_feasible_velocity
+    assert set(track.params) == {"std", "command_name", "margin"}  # std: upstream's curriculum

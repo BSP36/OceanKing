@@ -112,33 +112,65 @@ stated as such (decided 2026-10-25).
 
 ## 6. Reward
 
-Upstream's 25 terms and weights, unchanged, except the two that measure foot load in newtons.
-Reviewed term by term (2026-10-25):
+Upstream's 25 terms and weights, with two changes.
+
+### 6.1 Track what the physics allows (revised 2026-10-25)
+
+Upstream's `track_linear_velocity` pays `exp(-|v_cmd - v|^2 / std^2)`. Under water most
+commands of upstream's range (up to 0.8 m/s) cannot be reached: against the traction limit of
+section 1 (0.2–0.5 m/s in the training ranges), the term pays almost nothing however the robot
+walks, so it stops pulling. **Observed in the first run** (stopped at iteration 75950, after the
+current reached 0.2 m/s): the term fell from 0.76 to 0.62 while the posture terms rose, and against
+the official policy the run walked slower in every condition (forward 0.17 against 0.23 m/s,
+sideways 0.09 against 0.19 m/s, rock, beta 0.8, still water).
+
+The term now tracks the **feasible target** instead of the command
+(`oceanking.water.track_feasible_velocity`):
+
+- the feet hold up to the traction limit `v_lim` relative to the water in any direction
+  (per environment, from its beta, mass, ground friction and the calibrated drag);
+- so the reachable ground velocities are the disk of radius `v_lim` centred on the current, in the
+  heading frame;
+- the target is the command if it is inside the disk, otherwise the disk's nearest point to it:
+  as fast as the physics allows towards the command.
+
+Same form, same `std` (still set by upstream's curriculum). Walking at the physical maximum
+towards an impossible command is full marks; drifting at the least possible speed in a current
+the feet cannot hold is full marks too. `v_lim` is the static estimate; `TRACTION_MARGIN`
+(1.0) scales it if walking proves to hold less.
+
+### 6.2 Foot loads follow the net weight
 
 | Term | Upstream | Underwater |
 |---|---|---|
-| `track_linear_velocity` (+2), `track_angular_velocity` (+2) | velocity over the ground vs the command | unchanged: this *is* the goal. Standing in a current is a zero command, tracked only by not drifting (a 0.07 m/s drift costs 11% of the term at std 0.2) |
 | `stance_load` (+0.5) | stance feet loaded to 5 N each | threshold scaled per environment by its net weight over the land weight, `(1 - beta) M / m_land` (beta 0.8: 2.2 N) |
 | `stance_load_stand` (+1.167) | standing feet loaded to 3 N each | same scaling (beta 0.8: 1.3 N) |
-| `soft_touchdown` (−4.5) | foot's downward speed just before touchdown | unchanged: a speed, independent of weight |
-| `foot_slip` (−0.5), `standing_sway` (−0.1) | foot slip in contact; body motion while standing | unchanged; both already resist being carried |
-| `energy` (−0.02), `torque_headroom` (−1) | actuator power; torque beyond 69% of the limit | unchanged: servo protection, which resisting a current must respect |
-| the rest (gait, posture, clearance, limits, smoothness) | | unchanged |
 
-Without the scaling, the two load terms cannot saturate underwater (the net weight is 10.8 N at
-beta 0.8 against 25 N on land) and push the policy to press its feet harder than the water allows
-(review of 2026-10-25).
+Without it the two terms cannot saturate underwater (net weight 10.8 N at beta 0.8 against 25 N
+on land) and push the policy to press its feet harder than the water allows.
 
-**Watched during training**, not rewarded: drift while commanded to stand, and the share of
-episodes inside the traction limit. If drift does not fall, the first lever is `standing_sway`'s
-weight.
+### 6.3 Unchanged, and why
+
+| Term | |
+|---|---|
+| `track_angular_velocity` (+2) | turning in place meets little drag; no evidence of it being infeasible |
+| `soft_touchdown` (−4.5) | a speed, independent of weight |
+| `foot_slip` (−0.5), `standing_sway` (−0.1) | already resist being carried |
+| `energy` (−0.02), `torque_headroom` (−1) | servo protection, which resisting a current must respect |
+| the rest (gait, posture, clearance, limits, smoothness) | |
+
+**Watched during training**, not rewarded: `feasible_tracking_error` (m/s, against the target),
+`command_feasible` (share of steps whose command was reachable as given), drift while
+commanded to stand.
 
 ## 7. Commands
 
-Upstream's ranges (up to 0.8 m/s, 4 rad/s), unchanged. Commands beyond what the current allows are
-kept: tracking rewards saturate smoothly, and the policy learns to do its best rather than being
-shown only feasible tasks. A share of episodes (upstream's standing fraction) commands zero, which
-is the station-keeping test.
+Upstream's ranges (up to 0.8 m/s, 4 rad/s), unchanged: with the feasible target an
+out-of-reach command means "as fast as possible that way", which is what a command to a crab in
+a current should mean. A share of episodes (upstream's standing fraction) commands zero, the
+station-keeping test. After a resume the first command of each environment is still drawn from the
+curriculum's first rung (it was sampled before the checkpoint's level was restored) until its
+first resample, 3–8 s later.
 
 ## 8. Run bookkeeping
 

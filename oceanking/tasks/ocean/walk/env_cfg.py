@@ -34,6 +34,9 @@ FRICTION_RANGE = (0.4, 0.8)
 BASE_COM_SCALE = 0.5
 #: Flow-sensor noise on the observed current, m/s (uniform, +/-).
 CURRENT_NOISE = 0.03
+#: Multiplier on the static traction limit in the feasible-velocity target (1: the
+#: limit as estimated; below 1 if walking turns out to hold less than standing).
+TRACTION_MARGIN = 1.0
 #: Upstream's foot-load thresholds, N, scaled per environment by its net weight.
 STANCE_LOAD_N = 5.0
 STANCE_LOAD_STAND_N = 3.0
@@ -98,6 +101,17 @@ def env_cfg(
         term.func = water.scaled_load(term.func, newtons)
         term.params = {k: v for k, v in term.params.items() if k != "force_threshold"}
 
+    # ── reward: track what the physics allows, not the raw command ──
+    track = cfg.rewards["track_linear_velocity"]
+    if set(track.params) != {"std", "command_name"}:
+        raise RuntimeError(f"upstream's track_linear_velocity params changed: {track.params}")
+    track.func = water.track_feasible_velocity
+    track.params["margin"] = TRACTION_MARGIN
+
+    cfg.metrics["feasible_tracking_error"] = MetricsTermCfg(
+        func=water.feasible_tracking_error, params={"margin": TRACTION_MARGIN})
+    cfg.metrics["command_feasible"] = MetricsTermCfg(
+        func=water.command_feasible, params={"margin": TRACTION_MARGIN})
     cfg.metrics["standing_drift"] = MetricsTermCfg(func=water.standing_drift)
     cfg.metrics["standing_share"] = MetricsTermCfg(func=water.standing_share)
 
