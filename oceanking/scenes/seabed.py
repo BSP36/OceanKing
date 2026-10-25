@@ -1,4 +1,4 @@
-"""seabed -- a flat sandy seabed seen through water.
+"""seabed -- a flat, hard seabed seen through water: the reference ground.
 
 **A look, not physics.** The ground is upstream's flat plane with its contact
 parameters untouched; only textures, lights and the sky change. The water's
@@ -39,9 +39,10 @@ ATTENUATION = (0.35, 0.07, 0.04)
 #: Brightest channel of the directional light after renormalising.
 LIGHT_LEVEL = 1.2
 
-SAND = (0.76, 0.70, 0.55)
-SAND_DARK = (0.66, 0.60, 0.46)
-SAND_MARK = (0.60, 0.55, 0.42)
+#: A hard, clean floor (grey-blue), so it is not mistaken for `seabed_sand`.
+SAND = (0.62, 0.64, 0.66)
+SAND_DARK = (0.52, 0.54, 0.57)
+SAND_MARK = (0.45, 0.47, 0.50)
 
 #: Checker cell edge, m. With texuniform, texrepeat is repeats per metre and a
 #: builtin checker draws one cell per repeat (measured against the stakes).

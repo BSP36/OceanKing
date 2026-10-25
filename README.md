@@ -62,7 +62,9 @@ MUJOCO_GL=egl ../.venv/bin/python scripts/play.py --task ocean.posture --checkpo
     --video-distance 4 --video-elevation -30 --video-lookat-height 0   # land baseline, fixed camera
 ```
 
-Comparison videos with distance read-outs: `oceanking/tools/compare_video.py`. The volume
+Scenes (`--scene`): `seabed` (flat, hard reference ground), `seabed_rock` (wet rock, uneven,
+friction 0.5), `seabed_sand` (soft sand, friction 0.6); the water is the task's, so each ground
+runs wet or dry. Comparison videos with distance read-outs: `oceanking/tools/compare_video.py`. The volume
 table is regenerated with `.venv/bin/python -m oceanking.tools.link_volumes`.
 
 ## Setup

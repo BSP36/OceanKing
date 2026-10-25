@@ -13,7 +13,7 @@ Implementation: [`oceanking/hydro.py`](../oceanking/hydro.py) (configuration, cu
 [`physics_report.py`](../oceanking/tools/physics_report.py) (prints the numbers below).
 Verification: [`tests/`](../tests).
 
-Status: implemented and verified as described below, 2026-10-25 (section 11 lists
+Status: implemented and verified as described below, 2026-10-25 (section 12 lists
 what the 2026-10-25 review changed).
 
 ## 1. Conventions
@@ -235,7 +235,31 @@ heave drag is 0.59 m/s.
 **Approximation:** isotropic, at each link's centre of mass. Real added mass is a
 direction-dependent tensor, largest for motion across a body's flat faces.
 
-## 8. Configuration
+## 8. The seabed (scenes)
+
+The ground belongs to the **scene** (`--scene`), the water to the task, so each
+ground can be run wet and dry. Friction is set on the ground with a contact
+priority above the feet's (upstream's `set_ground_contact`), so the ground's
+value is the one the solver uses and the feet's dry 1.2 is discarded; the feet's
+contact stiffness is kept unless the ground is soft.
+
+| Scene | Ground | Sliding friction | Contact | Basis |
+|---|---|---|---|---|
+| `seabed` | flat, hard | feet's 1.2 (unchanged) | feet's | reference ground, not a claim about any real seabed |
+| `seabed_rock` | heightfield, 20 mm peak-to-peak (3.8 mm rms), 0.2 m stones, fixed seed | **0.5** | feet's | rubber on wet rock: ~0.5–0.7 on rough clean faces, ~0.2–0.4 polished or with biofilm; wet rubber friction is carried by hysteresis against texture, which a water or biological film over smooth rock removes |
+| `seabed_sand` | flat, soft (feet sink ~1 cm on land) | **0.6** | upstream `soft`: compliant, plus granular drag on a sunk foot | a foot sliding on saturated sand shears the sand: tan of the internal friction angle, 30–35 deg for clean sand, is 0.58–0.70 |
+
+Neither friction value is a measurement of this robot's feet; both are
+literature-range choices and are the first parameters to vary in a sensitivity
+study. The sand's granular drag is upstream's, which records that its constant has
+no measured basis. The rock relief is 80% of the gait's 25 mm foot lift; the
+official policy never trained on uneven ground and has no terrain sensing.
+
+With these values the traction limit of section 11 becomes, at beta 0.8, a
+relative water speed of about **0.44 m/s on rock** and **0.48 m/s on sand**
+(`v = sqrt(2 mu (1 - beta) M g / (rho Cd A))`, head-on).
+
+## 9. Configuration
 
 `ocean.posture` (`jumper.posture` with this physics; same observation, action and
 rewards). Each option falls back to an environment variable, then to the default.
@@ -258,7 +282,7 @@ physics substep (1 kHz) on both backends, with nothing to clear on reset.
 evaluation of one experiment must be given the same values; replays print the
 resolved condition and `--trajectory-out` stores it.
 
-## 9. Verification
+## 10. Verification
 
 `tests/` (`.venv/bin/python -m pytest tests/`), each test naming the silent failure
 it guards against. On a box (MuJoCo Warp on the GPU and native MuJoCo):
@@ -282,7 +306,7 @@ On the real Jumper model:
 | Volume table vs model | SHA-256 match required; masses must agree per link |
 | Net weight of the compiled robot | `(1 - beta) M g` (rel. 1e-6) for several `beta`, `a` |
 | Each link's buoyancy | `rho V_i g`, at the stored centroid, link itself uncompensated |
-| Inertial frames of the kit and buoyancy points | as intended (see section 11, item 3) |
+| Inertial frames of the kit and buoyancy points | as intended (see section 12, item 3) |
 | Trim | horizontal offset of centre of buoyancy from centre of mass < 1 µm at beta 0.7, 0.8, 0.95 |
 | Standing at HOME under the policy's PD gains | ground load `(1 - beta) M g` (within 0.2% of weight) at beta 0.8 and 0.95 |
 | Whole robot, free water, no drag | centre of mass accelerates at `-(1 - beta) g` on both simulators |
@@ -292,8 +316,9 @@ On the real Jumper model:
 | Drag calibration | stored factor reproduced by a fresh measurement; all three Cd in 0.8–1.3; stale file refused; factor reaches `option.density` |
 | Buoyancy points and keel | keel flagged with zero drag; points' fallback drag under 0.1% of the robot's |
 | Through the real task and scene path | `beta`, kit, drag flags, density and current reach the compiled model under any `--scene` |
+| Seabed grounds | rock and sand outrank the feet with friction 0.5 / 0.6 (rock: feet's stiffness; sand: soft); the reference seabed does not |
 
-## 10. Measurements
+## 11. Measurements
 
 Workstation: RTX PRO 6000 Blackwell, Ryzen 9 9950X3D; MuJoCo 3.11.0, MuJoCo Warp
 3.11.0.
@@ -303,6 +328,7 @@ buoyancy 43.17 N, net 10.79 N; BG 11.3 mm; head-on drag 2.48 N at 0.3 m/s;
 added mass 2.20 kg; terminal sink 0.59 m/s; traction `mu (1 - beta) M g` = 12.95 N
 with the nominal foot friction 1.2, against which the head-on drag balances at a
 relative water speed of **0.69 m/s** (beta 0.9: 0.46 m/s; beta 0.95: 0.31 m/s).
+Section 8 gives the same limit on wet rock and sand.
 
 **Training cost**, `ocean.posture`, 4096 environments, per PPO iteration: land
 1.31 s; water 2.00 s (2026-10-25). History: inertia-box drag 1.36 s; ellipsoid
@@ -329,7 +355,30 @@ Repeat runs of the same nominal condition agree to about 2 cm in final position.
 Not yet separated: how much of the slow-down is drag, reduced traction, or the
 kit's mass and added mass.
 
-## 11. Review of 2026-10-25
+**Official policy on the seabed grounds** (2026-10-25, `--nominal`, one run each,
+same command script; "hold" is the last 4 s, commanded to stand still; m/s):
+
+| Condition | forward (cmd 0.5) | sideways (cmd 0.3) | hold | final position |
+|---|---|---|---|---|
+| Land, flat | 0.42 | 0.22 | 0.00 | (1.60, 0.72) m |
+| Land, rock ground | 0.45 | 0.23 | 0.00 | (1.81, 0.71) m |
+| Land, sand ground | 0.36 | 0.19 | 0.00 | (1.32, 0.65) m |
+| Water beta 0.8, flat | 0.33 | 0.22 | 0.00 | (1.14, 0.69) m |
+| Water beta 0.8, rock | 0.28 | 0.21 | 0.00 | (1.13, 0.54) m |
+| Water beta 0.8, sand | 0.25 | 0.19 | −0.01 | (0.84, 0.56) m |
+| Water, rock, head current 0.3 | **0.07** | 0.15 | **−0.07** | **(−0.30, 0.34) m** |
+| Water, sand, head current 0.3 | **0.08** | 0.18 | **−0.07** | **(−0.46, 0.50) m** |
+| Water, rock, cross current 0.3 | 0.25 (drift −0.13) | **0.06** | −0.07 | (0.98, −0.68) m |
+| Water beta 0.9, rock, cross current 0.2 | 0.17 (drift −0.13) | **0.01** | −0.07 | (0.70, −0.87) m |
+
+It never fell (body z-axis never below 0.99, no resets). It **fails by being
+carried away**: against a 0.3 m/s head current on rock or sand it ends behind its
+start, and it cannot stand still in a current, losing 0.07 m/s downstream while
+commanded to hold. Standing on all six feet would hold: on rock at beta 0.8 the
+head-on drag at 0.3 m/s is 2.5 N against 5.4 N of traction. The policy keeps
+stepping in place, and each lifted foot gives up its share.
+
+## 12. Review of 2026-10-25
 
 Gravity, mass and buoyancy were re-derived from scratch and drag compared with
 an independent estimate. Changed:
@@ -348,7 +397,7 @@ an independent estimate. Changed:
    standing 0.43 N m nose-up moment. The keel is now placed to cancel it.
 5. **Added mass was missing**: about 40% of the robot's mass (section 7).
 
-## 12. Known limitations and open items
+## 13. Known limitations and open items
 
 1. The simulated robot is 2.543 kg; the product is 1.8 kg (section 3.1).
 2. Volumes are convex hulls of collision meshes, every link sealed (section 3.2).
@@ -358,6 +407,5 @@ an independent estimate. Changed:
 5. The kit is welded; the crown does not collide with the robot's own limbs, and
    its seat overlaps the hull by up to 40 cm^3 (section 5).
 6. Fully submerged only; no water surface; current uniform down to the seabed.
-7. **Open: friction.** Feet use upstream's nominal 1.2 (silicone on a dry floor).
-   Wet silicone on sand or rock is likely lower, and the traction limit scales
-   with it. To be set with the seabed scenes (sand, rock), which own the ground.
+7. Friction on rock (0.5) and sand (0.6) are literature-range choices, not
+   measurements (section 8); the reference `seabed` keeps the dry 1.2.

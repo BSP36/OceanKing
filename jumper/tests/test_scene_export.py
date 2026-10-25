@@ -46,7 +46,9 @@ def football(tmp_path_factory) -> Path:
 
 def test_the_training_scenes_are_withheld() -> None:
     withheld = {s for s in scenes.list_ids() if ex.refuse(s) is not None}
-    assert withheld == {"plain", "rough", "soft"}
+    # [oceanking] seabed_sand carries soft's granular-drag event, so it is withheld
+    # for the same reason soft is (see oceanking/scenes/seabed_sand.py).
+    assert withheld == {"plain", "rough", "soft", "seabed_sand"}
 
 
 def test_the_exporter_reads_the_declaration_rather_than_agreeing_with_it(monkeypatch) -> None:

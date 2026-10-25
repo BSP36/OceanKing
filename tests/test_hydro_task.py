@@ -67,3 +67,26 @@ def test_off_is_upstream_posture():
     # Control: the same comparison does see the water when it is on.
     water = _compile(ARGS)
     assert water.nbody != land.nbody and water.opt.density > 0.0
+
+
+@pytest.mark.parametrize(
+    "scene,ground,friction,soft",
+    [("seabed_rock", "terrain_0", 0.5, False), ("seabed_sand", "terrain", 0.6, True)],
+)
+def test_seabed_grounds_set_their_contact(scene, ground, friction, soft):
+    """The ground outranks the feet (priority 2), so its friction is the one the
+    solver uses; without that the feet's dry 1.2 would win and the scene would
+    change nothing underfoot. Rock keeps the feet's stiffness; sand is soft.
+    Control: the reference seabed leaves the ground below the feet's priority."""
+    from scenes.soft import SOFT_SOLIMP
+    from tasks.jumper.common.constants import _CONTACT_SOLIMP
+
+    m = _compile(ARGS, scene)
+    g = m.geom(ground).id
+    feet = [i for i in range(m.ngeom) if m.geom_priority[i] == 1]
+    assert len(feet) == 6 and m.geom_priority[g] > 1
+    assert m.geom_friction[g][0] == pytest.approx(friction)
+    expected = SOFT_SOLIMP if soft else _CONTACT_SOLIMP
+    np.testing.assert_allclose(m.geom_solimp[g], expected)
+    reference = _compile(ARGS, "seabed")
+    assert reference.geom_priority[reference.geom("terrain").id] < 1

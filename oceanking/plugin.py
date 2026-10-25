@@ -33,7 +33,18 @@ SCENES_DIR = ROOT / "scenes"
 #: Scene id -> (description, tags, use); see `scenes.registry.register`.
 SCENES: dict[str, tuple[str, tuple[str, ...], str]] = {
     "seabed": (
-        "underwater look: flat sandy seabed, blue water light fading with --depth",
+        "underwater look: flat hard seabed (reference ground), water light fading with --depth",
+        ("ocean", "underwater"),
+        "both",
+    ),
+    "seabed_rock": (
+        "**changes the ground**: wet rock, uneven (20 mm relief), friction 0.5; underwater look",
+        ("ocean", "underwater", "terrain"),
+        "both",
+    ),
+    "seabed_sand": (
+        "**changes the ground**: seabed sand, feet sink, granular drag, friction 0.6; "
+        "underwater look",
         ("ocean", "underwater"),
         "both",
     ),
