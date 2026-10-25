@@ -7,17 +7,37 @@ The physics this trains against is [`PHYSICS.md`](PHYSICS.md).
 
 ## 1. Goal
 
-One policy, `ocean.posture`'s interface, that walks on the seabed under a range of buoyancy
-ratios and currents, and **does not get carried away**: it tracks the commanded velocity where the
-physics allows it, and holds its position when commanded to stand.
+**A crab that walks at the commanded velocity whatever the current and buoyancy**, as far as the
+physics allows, and holds its position when commanded to stand.
 
-The baseline it must beat is the official `jumper.posture` policy, which underwater
-(PHYSICS.md §11) walks slowly in still water and, in a 0.2–0.3 m/s current, drifts downstream at
-0.06–0.10 m/s even when commanded to stand — while standing on six feet would hold.
+The official `jumper.posture` policy takes a velocity command and tracks it. Measured on land
+(2026-10-25, `--nominal`, 3 s per step): forward 0.2–0.8 m/s at 83–95% of the command, sideways
+0.2–0.6 m/s at 80–94%, turning 1–3 rad/s at 90–93% (0.1 m/s forward: 63%). It was trained through
+its whole command curriculum (checkpoint: command level 5 of 5, the precision rung at the 0.8 m/s
+and 4 rad/s ceilings). Underwater (PHYSICS.md §11) it walks slowly in still water and, in a
+0.2–0.3 m/s current, drifts downstream at 0.06–0.10 m/s even when commanded to stand.
 
-What "possible" means is set by traction against drag: at beta 0.8, head-on, the relative water
-speed the feet can resist is about 0.56 m/s at friction 1.2, 0.36 on wet rock and 0.40 on sand
-(PHYSICS.md §8, §11). The policy is not asked to beat that limit, and evaluation reports it.
+The commanded velocity is over the ground, in the body frame (upstream's definition), so a crab
+walking at 0.3 m/s against a 0.3 m/s current moves through the water at 0.6 m/s.
+
+### What the physics allows
+
+Traction against drag: the feet hold while `0.5 rho Cd A v_rel^2 < mu (1 - beta) M g`, with
+`v_rel` the speed relative to the water (walking speed plus head current) and `Cd A = 0.0818 m^2`
+head-on (PHYSICS.md §6.2; side-on is the same within 1%). Limit on `v_rel`, m/s:
+
+| beta | mu 0.4 | mu 0.5 (wet rock) | mu 0.6 (sand) | mu 0.8 | mu 1.2 |
+|---|---|---|---|---|---|
+| 0.70 | 0.43 | 0.48 | 0.52 | 0.60 | 0.74 |
+| 0.75 | 0.38 | 0.42 | 0.46 | 0.53 | 0.65 |
+| 0.80 | 0.32 | 0.36 | 0.40 | 0.46 | 0.56 |
+| 0.85 | 0.27 | 0.31 | 0.33 | 0.39 | 0.47 |
+| 0.90 | 0.22 | 0.24 | 0.27 | 0.31 | 0.38 |
+| 0.95 | 0.15 | 0.17 | 0.18 | 0.21 | 0.26 |
+
+A static estimate (all of the net weight on the feet); a gait that lifts feet carries the same net
+weight on fewer of them, so the total friction is the same. Evaluation reports, for each cell,
+whether the command was within this limit, and "at the commanded velocity" is judged only there.
 
 ## 2. Starting point
 
@@ -29,31 +49,38 @@ is exactly the official one; training only adds what the water needs.
 
 ## 3. Observation
 
-The actor keeps every upstream term (IMU, joint history, commands, gait phase, posture command).
-Added:
+**Actor: upstream's nine terms, unchanged, plus two.** Upstream (`jumper.posture`, 415 values):
+`base_ang_vel` (3), `projected_gravity` (3), `joint_pos`, `joint_vel`, `actions` and
+`actuator_force` (5-frame strided histories, 100 each), `command` (3), `gait_phase` (2),
+`posture_command` (4); noise on the IMU terms as upstream. Added (418 in total):
 
-| Term | Dim | Meaning | Realism |
-|---|---|---|---|
-| `buoyancy_ratio` | 1 | the robot's current beta | known on a real robot: the keel is fixed and the crown tank's fill is the robot's own state |
-| `current_body` | 2 | water velocity at the robot, in the body's yaw frame | needs a flow sensor (stated in the report) |
+| Term | Dim | Meaning | Noise | Realism |
+|---|---|---|---|---|
+| `buoyancy_ratio` | 1 | the robot's current beta | none | known on a real robot: the keel is fixed and the crown tank's fill is the robot's own state |
+| `current_body` | 2 | water velocity at the robot, in its yaw (heading) frame | uniform ±0.03 m/s | an onboard flow sensor (decided 2026-10-25; stated in the report) |
 
-The critic additionally gets the ground friction and the true current (privileged).
-
-**Decided (2026-10-25): the actor sees the current** (option A). The alternative, a second run
-whose actor sees only beta, was set aside for time; it stays a possible follow-up.
+**Critic: upstream's fifteen terms** (including the true base linear velocity, foot contacts and
+contact forces), **plus** `buoyancy_ratio`, `current_body` without noise, and the ground's friction.
 
 ## 4. Randomisation (per environment, resampled at every reset)
 
+Ranges chosen so that **standing is always within the traction limit** and walking at the command
+is possible in most of the space (section 1): at the worst corner, beta 0.9 on friction 0.4, the
+feet hold up to 0.22 m/s relative to the water.
+
 | Quantity | Range | How |
 |---|---|---|
-| beta | 0.75 – 0.95 | keel mass per environment (`body_mass`, `set_const`); keel position stays at the beta-0.8 trim, so pitch trim varies slightly with beta, as a real fixed-keel vehicle's would |
-| current | speed 0 – 0.3 m/s, uniform direction, constant within an episode | `opt.wind` expanded to one entry per world (probe 2026-10-25: per-world currents work on MuJoCo Warp, and in-place edits take effect without re-capturing the CUDA graph) |
+| beta | 0.75 – 0.90 | keel mass per environment (`body_mass`, `set_const`); keel position stays at the beta-0.8 trim, so pitch trim varies slightly with beta, as a real fixed-keel vehicle's would |
+| current | speed 0 – 0.2 m/s, uniform direction, constant within an episode | `opt.wind` expanded to one entry per world (probe 2026-10-25: per-world currents work on MuJoCo Warp, and in-place edits take effect without re-capturing the CUDA graph) |
 | ground friction | 0.4 – 0.8 | on the ground geom, not the feet (the ground outranks the feet: PHYSICS.md §8) |
 | upstream base COM offset | upstream's ranges x 0.5 | upstream's land ranges weigh about twice as much against the underwater net weight |
 | upstream encoder bias, observation noise | unchanged | |
 
-**Current curriculum:** the speed range opens from 0–0.1 m/s to 0–0.3 m/s over the first
+**Current curriculum:** the speed range opens from 0–0.05 m/s to 0–0.2 m/s over the first
 1000 iterations, or by tracking performance (upstream's curriculum pattern).
+
+Evaluation goes beyond these ranges (beta 0.95, currents 0.3 m/s) to show where the policy, and the
+physics, give out.
 
 ## 5. Ground
 
@@ -96,9 +123,9 @@ seeded, the same initial states and command sequences for every policy.
 | Axis | Values |
 |---|---|
 | ground | `seabed`, `seabed_rock`, `seabed_sand` |
-| beta | 0.8, 0.9 |
-| current | 0, 0.15, 0.3 m/s; head-on, cross, following |
-| commands | forward 0.3 m/s; sideways 0.2 m/s; stand |
+| beta | 0.8, 0.9 (and 0.95, outside training) |
+| current | 0, 0.1, 0.2, 0.3 m/s; head-on, cross, following |
+| commands | forward 0.2 and 0.4 m/s; sideways 0.2 m/s; turn 1 rad/s; stand |
 | episodes | 20 per cell |
 
 Metrics: velocity tracking error, drift while commanded to stand (m/s), falls, the traction limit
