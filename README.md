@@ -44,9 +44,9 @@ volume, buoyancy, the ballast kit, drag and current, options, verification and m
 In short: each link displaces its measured hull volume at its own centre of buoyancy (sealed,
 Jumper floats at beta 1.35); a lead keel inside the torso, sized and placed to trim, and a buoyant
 crown tank on its roof bring the whole robot to the requested beta; drag is MuJoCo's ellipsoid
-fluid model calibrated to Cd 1.0 on the robot's silhouette; added mass (C_a 0.5) is included; the
-current is `option.wind`. All of it is applied before compilation, so it acts every substep on
-both backends. `python -m oceanking.tools.physics_report` prints the resulting quantities.
+fluid model, calibrated part by part (torso, crown, legs, arms); added mass is included; the
+current is `option.wind`. MuJoCo Warp's fluid torque is patched to match native MuJoCo
+(`oceanking/warp_patch.py`). `python -m oceanking.tools.physics_report` prints the quantities.
 
 `ocean.posture` is upstream `jumper.posture` with this physics; its observation and action are
 unchanged, so the official checkpoint runs in it directly:

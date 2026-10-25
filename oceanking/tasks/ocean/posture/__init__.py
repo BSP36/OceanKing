@@ -89,10 +89,10 @@ def cli_args(group):
         "--added-mass",
         dest="added_mass_coef",
         type=float,
-        default=float(env("OCEAN_ADDED_MASS", "0.5")),
-        metavar="CA",
-        help="added mass as a fraction of displaced water, on with drag "
-        "(default: 0.5, or OCEAN_ADDED_MASS)",
+        default=float(env("OCEAN_ADDED_MASS", "1.0")),
+        metavar="K",
+        help="multiplier on the added mass (C_a 0.5 torso and crown, 1.0 limbs), on with "
+        "drag; 0 is off (default: 1, or OCEAN_ADDED_MASS)",
     )
     group.add_argument(
         "--nominal",

@@ -16,7 +16,8 @@ Python in the step loop and nothing to clear on reset.
   so it acts on the velocity relative to the water and depends on shape, not on
   how mass is distributed inside a body. It contains no buoyancy term, so it never
   double-counts with gravcomp. Summed over overlapping geoms with no shielding it
-  overstates a body's drag, so it is calibrated (`oceanking.drag`).
+  overstates drag unevenly, so each part of the robot is calibrated on its own
+  (`oceanking.drag`).
 - **Added mass** (with drag): ``C_a rho V`` of extra inertia per link, its weight
   compensated (`oceanking.buoyancy.add_added_mass`).
 """
@@ -25,6 +26,13 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal
+
+try:  # MuJoCo Warp's fluid torque misses each geom's lever arm; see warp_patch.
+    from oceanking import warp_patch as _warp_patch
+except ImportError:  # no MuJoCo Warp: native backend only, nothing to fix
+    _warp_patch = None
+else:
+    _warp_patch.install()
 
 Mode = Literal["off", "buoyancy", "drag", "full"]
 MODES: tuple[str, ...] = ("off", "buoyancy", "drag", "full")
@@ -68,14 +76,15 @@ class HydroCfg:
     coefficient (docs/PHYSICS.md); use it for sensitivity studies."""
 
     drag_calibration: float | None = None
-    """Factor on the density MuJoCo's ellipsoid model sees, bringing the summed
-    per-geom drag to the target coefficient on the robot's silhouette. None reads
-    Jumper's measured value (`oceanking/data/jumper_drag.json`); 1.0 is MuJoCo's
-    raw model, for bodies other than Jumper."""
+    """None: Jumper's per-group drag multipliers, measured
+    (`oceanking.drag`, `oceanking/data/jumper_drag.json`). A float: that one
+    multiplier on every colliding geom; 1.0 is MuJoCo's raw model, for bodies
+    other than Jumper."""
 
-    added_mass_coef: float = 0.5
-    """Added mass as a fraction of displaced water mass, on with drag (a
-    hydrodynamic effect). 0 switches it off."""
+    added_mass_coef: float = 1.0
+    """Multiplier on the added mass, on with drag (a hydrodynamic effect): 1.0 is
+    C_a 0.5 on the torso and crown and 1.0 on the limbs
+    (`oceanking.buoyancy.ADDED_MASS_CA`); 0 switches it off."""
 
     current: tuple[float, float, float] = (0.0, 0.0, 0.0)
     """Uniform fluid velocity in the world frame, m/s."""
@@ -123,9 +132,12 @@ class HydroCfg:
         elif self.buoyancy_on:
             parts.append(f"uniform beta={self.buoyancy_ratio:g}")
         if self.drag_on:
+            cal = self.calibration()
+            cal_text = (" ".join(f"{k} {v:.2f}" for k, v in sorted(cal.items()))
+                        if isinstance(cal, dict) else f"uniform {cal:g}")
             parts.append(
                 f"rho={self.water_density:g} drag x{self.drag_scale:g} "
-                f"(calibration {self.calibration():.3f}) added_mass={self.added_mass_coef:g}"
+                f"(calibration {cal_text}) added_mass={self.added_mass_coef:g}"
             )
             parts.append("current=({:g}, {:g}, {:g}) m/s".format(*self.current))
         return " ".join(parts)
@@ -137,12 +149,12 @@ class HydroCfg:
 
         return solve_ballast(self.buoyancy_ratio, self.crown_air, self.water_density)
 
-    def calibration(self) -> float:
+    def calibration(self) -> dict[str, float] | float:
         if self.drag_calibration is not None:
             return self.drag_calibration
-        from oceanking.drag import calibration_factor
+        from oceanking.drag import group_factors
 
-        return calibration_factor()
+        return group_factors()
 
 
 def apply_to_spec(spec: Any, cfg: HydroCfg) -> None:
@@ -164,10 +176,9 @@ def apply_to_spec(spec: Any, cfg: HydroCfg) -> None:
     if cfg.drag_on:
         from oceanking.buoyancy import add_added_mass, set_drag_geoms
 
-        set_drag_geoms(spec)
-        scale = cfg.drag_scale * cfg.calibration()
-        spec.option.density = cfg.water_density * scale
-        spec.option.viscosity = cfg.water_viscosity * scale
+        set_drag_geoms(spec, cfg.calibration())
+        spec.option.density = cfg.water_density * cfg.drag_scale
+        spec.option.viscosity = cfg.water_viscosity * cfg.drag_scale
         spec.option.wind = list(cfg.current)
         if cfg.added_mass_coef > 0.0:
             add_added_mass(spec, cfg.added_mass_coef, cfg.water_density)

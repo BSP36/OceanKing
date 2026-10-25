@@ -49,9 +49,7 @@ def test_task_arguments_reach_the_model_under_any_scene(scene):
     flagged = m.geom_fluid.reshape(m.ngeom, -1)[:, 0] > 0
     robot = np.array([m.geom(g).name.startswith("robot/") for g in range(m.ngeom)])
     assert flagged[robot].sum() >= 41
-    from oceanking.drag import calibration_factor
-
-    assert m.opt.density == pytest.approx(2000.0 * calibration_factor())
+    assert m.opt.density == pytest.approx(2000.0)
     np.testing.assert_allclose(m.opt.wind, (0.1, -0.05, 0.0))
 
 

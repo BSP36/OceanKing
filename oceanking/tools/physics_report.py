@@ -56,8 +56,6 @@ def main() -> None:
     for b in range(m.nbody):
         if m.body(b).name.endswith("_cob"):
             lift[b] = (m.body_gravcomp[b] - 1.0) * m.body_mass[b]
-        elif m.body(b).name == "oceanking_crown":
-            lift[b] = m.body_gravcomp[b] * m.body_mass[b]
     phys = np.array([not m.body(b).name.endswith("_cob") for b in range(m.nbody)])
     com = (m.body_mass[phys, None] * d.xipos[phys]).sum(0) / m.body_mass[phys].sum()
     cob = (lift[:, None] * d.xipos).sum(0) / lift.sum()
@@ -78,8 +76,12 @@ def main() -> None:
     print(f"terminal sink speed    {vt:.2f} m/s (net weight against heave drag)")
 
     # Added mass.
-    added = 0.5 * RHO * V
-    print(f"added mass (C_a 0.5)   {added:.2f} kg = {added / M:.0%} of M; sink acceleration "
+    from oceanking.drag import group_of
+
+    added = RHO * (sum(B.ADDED_MASS_CA[group_of(n)] * e["volume_m3"]
+                       for n, e in B.link_table()["links"].items())
+                   + B.ADDED_MASS_CA["crown"] * ballast.crown_volume)
+    print(f"added mass             {added:.2f} kg = {added / M:.0%} of M; sink acceleration "
           f"{(1 - args.beta) * M * G / (M + added):.2f} m/s^2 (without: {(1 - args.beta) * G:.2f})")
 
     # Traction against drag.

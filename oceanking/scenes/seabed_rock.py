@@ -15,7 +15,8 @@ dry 1.2; the contact stiffness stays the feet's own.
 
 ## Shape
 
-A random heightfield, 20 mm peak-to-peak (3.8 mm rms) in cells of `CELL` --
+A 24 m square field (inside a 12 m flat border, so no episode reaches an edge)
+of a random heightfield, 20 mm peak-to-peak (3.8 mm rms) in cells of `CELL` --
 stones a hand across, standing up to 80% of the 25 mm the gait lifts its feet. Built from
 a fixed seed, so every run walks the same rocks. The official policy never saw
 uneven ground and has no terrain sensing; that is part of what this scene tests.
@@ -39,7 +40,17 @@ WET_ROCK_FRICTION = (0.5, 0.01, 0.01)
 RELIEF = 0.010
 #: Size of one stone, m (the heightfield's downsampled cell).
 CELL = 0.2
-TILE = 8.0
+#: One rock field, `TILE` square, inside a flat border `BORDER` wide. **Sized so
+#: no episode can reach the edge**: no termination ends an episode when a robot
+#: leaves the ground (upstream drops `out_of_terrain_bounds`), and found in review,
+#: an 8 m tile with no border let robots walk off and fall forever. A training
+#: episode is 20 s at up to 0.8 m/s in x and y at once (1.13 m/s), from a spawn
+#: within 0.5 m: 23.1 m at most, against TILE/2 + BORDER = 24 m.
+#: `tests/test_seabed_rock.py` checks this against the task's own numbers.
+#: Rocks cover the first 12 m in every direction, where episodes spend their time;
+#: a field this wide also keeps 4096 environments from sharing one patch of rock.
+TILE = 24.0
+BORDER = 12.0
 SEED = 7
 #: The generator names its ground `terrain_<n>`, which upstream's `GROUND` pattern
 #: (`terrain$`, the plane) does not match -- found when `set_ground_contact`
@@ -58,9 +69,12 @@ ROCK_FILM = (0.25, 0.33, 0.22)  # green-brown biofilm flecks
 #: Checker repeats across the tile: 0.5 m cells, like the other seabed scenes.
 #: A heightfield maps one texture repeat over its whole extent.
 ROCK_TEXREPEAT = TILE / 0.5
-#: Contact budgets for a heightfield under six feet, from upstream's rough scene.
-NCONMAX = 131
-NJMAX = 1024
+#: Contact and constraint budgets, per world. Upstream's rough scene's 131 / 1024
+#: overflowed at construction on MuJoCo Warp ("nconmax must be >= 253", then
+#: "njmax must be >= 1034"): the spawn state, root at the rock surface before the
+#: first step, puts the whole robot in contact. Walking needs ~6 contacts.
+NCONMAX = 320
+NJMAX = 1400
 
 
 
@@ -73,7 +87,8 @@ def _terrain():
     from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
     return TerrainGeneratorCfg(
-        size=(TILE, TILE), num_rows=1, num_cols=1, seed=SEED, curriculum=False,
+        size=(TILE, TILE), border_width=BORDER, num_rows=1, num_cols=1, seed=SEED,
+        curriculum=False,
         color_scheme="none", difficulty_range=(1.0, 1.0),
         sub_terrains={"rock": HfRandomUniformTerrainCfg(
             proportion=1.0, noise_range=(0.0, RELIEF), noise_step=0.005,

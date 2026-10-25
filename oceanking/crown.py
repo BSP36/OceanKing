@@ -76,13 +76,51 @@ def dry_mass() -> float:
     return (_tank_outer() - tank_volume() + _solid_volume()) * PETG_DENSITY
 
 
-def centre_height() -> float:
-    """Height of the crown's centre of mass above its base, for the inertial.
-    Approximated at the tank's centroid (band cylinder plus dome)."""
+def _tank_centroid_height() -> float:
     band = math.pi * BAND_RADIUS**2 * BAND_HEIGHT
     dome = 2.0 / 3.0 * math.pi * DOME_RADIUS**2 * DOME_HEIGHT
     z_dome = BAND_HEIGHT + 3.0 / 8.0 * DOME_HEIGHT
     return (band * BAND_HEIGHT / 2 + dome * z_dome) / (band + dome)
+
+
+def _water_centroid_height(volume: float) -> float:
+    """Height above the crown's base of `volume` of water settled in the tank,
+    upright: it fills the band's cylinder from the floor, then the dome."""
+    r_band = BAND_RADIUS - WALL
+    r_dome, h_dome = DOME_RADIUS - WALL, DOME_HEIGHT - WALL
+    dz = 1e-4
+    filled = moment = 0.0
+    z = WALL
+    while filled < volume:
+        if z < BAND_HEIGHT:
+            area = math.pi * r_band**2
+        else:
+            u = (z - BAND_HEIGHT) / h_dome
+            if u >= 1.0:
+                break
+            area = math.pi * r_dome**2 * (1.0 - u * u)
+        dv = min(area * dz, volume - filled)
+        filled += dv
+        moment += dv * (z + dz / 2)
+        z += dz
+    return moment / filled if filled > 0 else WALL
+
+
+def buoyancy_centre_height() -> float:
+    """Height of the crown's centre of buoyancy above its base: the centroid of
+    its sealed tank (band cylinder plus dome); points and orb are ~1% of it."""
+    return _tank_centroid_height()
+
+
+def centre_height(water_mass: float = 0.0, rho: float = 1000.0) -> float:
+    """Height of the crown's centre of mass above its base, for the inertial: the
+    shell (and points, orb) at the tank's centroid, the water settled at the tank's
+    floor (upright; the free surface's effect on stability is not modelled)."""
+    dry = dry_mass()
+    if water_mass <= 0.0:
+        return _tank_centroid_height()
+    z_water = _water_centroid_height(water_mass / rho)
+    return (dry * _tank_centroid_height() + water_mass * z_water) / (dry + water_mass)
 
 
 def inertia(mass: float) -> list[float]:

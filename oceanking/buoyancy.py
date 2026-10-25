@@ -63,9 +63,14 @@ DATA = Path(__file__).resolve().parent / "data" / "jumper_link_volumes.json"
 LEAD_DENSITY = 11340.0  # kg/m^3
 
 #: Keel footprint; the thickness follows from the mass.
-KEEL_FOOTPRINT = (0.12, 0.10)  # m, x by y
-#: Gap between the torso's lowest point and the keel's underside.
-KEEL_CLEARANCE = 0.005  # m
+#: 110 x 90 mm: inside the base's hull at every beta. 120 x 100 mm put about 7 cm^3
+#: of lead corners outside the rounded floor (found in review).
+KEEL_FOOTPRINT = (0.11, 0.09)  # m, x by y
+#: Height of the keel's underside above the torso's lowest point. The hull's floor
+#: is rounded: 3.5 mm up at the centre, 6.5-8.0 mm up under the plate's corners
+#: (measured on the base's collision hull); 10 mm keeps every corner inside
+#: (`tests/test_buoyancy.py::test_the_keel_lies_inside_the_hull`).
+KEEL_CLEARANCE = 0.010  # m
 
 #: Ellipsoid fluid model coefficients for drag-only use: blunt drag, slender drag,
 #: angular drag, Kutta lift, Magnus lift. The first three are MuJoCo's defaults;
@@ -74,6 +79,14 @@ DRAG_COEFS = (0.5, 0.25, 1.5, 0.0, 0.0)
 NO_FLUID = (0.0, 0.0, 0.0, 0.0, 0.0)
 
 LEAD_GREY = (0.35, 0.36, 0.38, 1.0)
+
+#: The keel plate's collision bit: one no geom's conaffinity has, so it touches
+#: nothing, but it counts as colliding and survives the native backend's
+#: stripping of non-colliding geoms (without its fluid flag, the keel would fall
+#: back to the inertia-box drag model there and nowhere else).
+KEEL_CONTYPE = 1 << 30
+#: Fluid multiplier of the keel plate: positive (the flag), otherwise nothing.
+KEEL_FLUID = 1e-9
 
 #: Mass of each buoyancy point, kg. It only has to be small against its link's
 #: mass (the smallest link is 1 g) and large enough to keep the compensation
@@ -299,22 +312,27 @@ def install_on_spec(spec: Any, ballast: Ballast) -> None:
         keel.gravcomp = 0.0
         plate = keel.add_geom(
             name=f"{prefix}oceanking_keel_plate", type=mujoco.mjtGeom.mjGEOM_BOX,
-            size=[s / 2 for s in size], rgba=list(LEAD_GREY), contype=0, conaffinity=0,
-            group=2, mass=0.0,
+            size=[s / 2 for s in size], rgba=list(LEAD_GREY), contype=KEEL_CONTYPE,
+            conaffinity=0, group=2, mass=0.0,
         )
         # A massive body with no flagged geom falls back to MuJoCo's inertia-box
-        # drag; the flag with zero coefficients gives the keel no drag of its own.
-        plate.fluid_ellipsoid = 1.0
+        # drag. Flagged, with zero coefficients and a negligible multiplier: the
+        # multiplier also scales the ellipsoid model's added-mass terms, which the
+        # coefficients do not gate, and inside the hull the keel has none.
+        plate.fluid_ellipsoid = KEEL_FLUID
         plate.fluid_coefs = list(NO_FLUID)
 
-    # Crown: displaces its outer volume, carries drag, buoyant and high. Its centre
-    # of buoyancy is taken at its centre of mass (both at the tank's centroid).
+    # Crown: displaces its outer volume, carries drag, buoyant and high.
     body = base.add_body(name=f"{prefix}oceanking_crown", pos=list(crown_mount()))
     body.explicitinertial = True
     body.mass = ballast.crown_mass
-    body.ipos = [0.0, 0.0, crown.centre_height()]
+    body.ipos = [0.0, 0.0, crown.centre_height(ballast.crown_water_mass, ballast.rho)]
     body.inertia = crown.inertia(ballast.crown_mass)
-    body.gravcomp = ballast.rho * ballast.crown_volume / ballast.crown_mass
+    # Its buoyancy acts at its volume's centroid, not at its centre of mass, which
+    # the settled tank water pulls down (found when BG dropped with that change).
+    body.gravcomp = 0.0
+    _add_buoyancy_point(body, [0.0, 0.0, crown.buoyancy_centre_height()],
+                        ballast.rho * ballast.crown_volume)
     # Its colliding parts collide the way the torso does (see `_torso_collision`):
     # with the ground and props, not with the robot's own limbs.
     crown.build(spec, body, prefix, _torso_collision(base, spec), DRAG_COEFS)
@@ -329,14 +347,24 @@ def _torso_collision(base: Any, spec: Any) -> tuple[int, int, int]:
     raise RuntimeError(f"{base.name} has no colliding geom to copy collision bits from")
 
 
-def add_added_mass(spec: Any, coef: float, rho: float) -> None:
-    """Add ``coef * rho * V`` to every Jumper link and to the crown, if present."""
+#: Added-mass coefficient C_a per drag group (`oceanking.drag.group_of`), before
+#: the `added_mass_coef` multiplier. Torso and crown: compact bodies, the sphere's
+#: 0.5. Limbs: cylinders moving across their axis, 1.0 -- legs swing broadside.
+ADDED_MASS_CA = {"torso": 0.5, "crown": 0.5, "legs": 1.0, "arms": 1.0}
+
+
+def add_added_mass(spec: Any, scale: float, rho: float) -> None:
+    """Add ``scale * C_a * rho * V`` to every Jumper link and to the crown, if
+    present, with C_a from `ADDED_MASS_CA` by drag group."""
+    from oceanking.drag import group_of
+
     links = link_table()["links"]
     for name, body in _find_links(spec).items():
-        _add_mass(body, coef * rho * links[name]["volume_m3"])
+        ca = ADDED_MASS_CA[group_of(name)]
+        _add_mass(body, scale * ca * rho * links[name]["volume_m3"])
     for body in spec.bodies:
         if _link(body) == "oceanking_crown":
-            _add_mass(body, coef * rho * crown.outer_volume())
+            _add_mass(body, scale * ADDED_MASS_CA["crown"] * rho * crown.outer_volume())
 
 
 def _add_mass(body: Any, dm: float) -> None:
@@ -358,12 +386,37 @@ def net_weight(model: Any, base: str = "robot/base_link") -> float:
     return float((m * (1.0 - model.body_gravcomp[tree])).sum() * -model.opt.gravity[2])
 
 
-def set_drag_geoms(spec: Any) -> None:
-    """Geometry-based drag: the ellipsoid fluid model on every colliding geom."""
+def set_drag_geoms(spec: Any, factors: dict[str, float] | float) -> None:
+    """Geometry-based drag: the ellipsoid fluid model, each geom's force scaled by
+    its multiplier (`fluid_ellipsoid`).
+
+    A float flags every colliding geom with that multiplier (MuJoCo's raw model at
+    1.0, for bodies other than Jumper). A dict maps Jumper's drag groups
+    (`oceanking.drag.group_of`) to their calibrated multipliers; then only the
+    robot's colliding geoms and the crown's flagged geoms are set, and a colliding
+    robot geom outside every group raises."""
+    from oceanking.drag import group_of
+
+    if not isinstance(factors, dict):
+        for geom in spec.geoms:
+            if geom.contype or geom.conaffinity:
+                geom.fluid_ellipsoid = float(factors)
+                geom.fluid_coefs = list(DRAG_COEFS)
+        return
+    links = set(link_table()["links"])
     for geom in spec.geoms:
-        if geom.contype or geom.conaffinity:
-            geom.fluid_ellipsoid = 1.0
-            geom.fluid_coefs = list(DRAG_COEFS)
+        link = _link(geom.parent)
+        if link == "oceanking_crown":
+            if geom.fluid_ellipsoid > 0:
+                geom.fluid_ellipsoid = factors["crown"]
+            continue
+        if link not in links or not (geom.contype or geom.conaffinity):
+            continue
+        group = group_of(link)
+        if group is None:
+            raise RuntimeError(f"{geom.name} on {link} belongs to no drag group")
+        geom.fluid_ellipsoid = factors[group]
+        geom.fluid_coefs = list(DRAG_COEFS)
 
 
 __all__ = [

@@ -22,7 +22,7 @@ def env_cfg(
     crown_air: float = 0.5,
     current: tuple[float, float] = (0.0, 0.0),
     drag_scale: float = 1.0,
-    added_mass_coef: float = 0.5,
+    added_mass_coef: float = 1.0,
     nominal: bool = False,
     trajectory_out: str | None = None,
 ) -> ManagerBasedRlEnvCfg:
@@ -41,6 +41,11 @@ def env_cfg(
     install(cfg, hydro)
     print(f"[oceanking] {hydro.describe()}")
     if nominal:
+        if not play:
+            raise ValueError(
+                "--nominal (or OCEAN_NOMINAL) is for replays: in training it would "
+                "silently remove the startup randomisation"
+            )
         _make_nominal(cfg)
     if trajectory_out:
         if not play:

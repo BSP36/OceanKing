@@ -64,6 +64,8 @@ def test_sealed_jumper_floats():
 
 
 N_LINKS = len(B.link_table()["links"])
+#: Buoyancy points: one per link and one for the crown.
+N_POINTS = N_LINKS + 1
 
 
 @pytest.mark.parametrize("beta,air", [(0.8, 0.5), (0.9, 0.0), (0.95, 1.0)])
@@ -76,7 +78,7 @@ def test_the_compiled_robot_has_the_requested_beta(beta, air):
     assert B.net_weight(m, "base_link") == pytest.approx(
         (1.0 - beta) * ballast.total_mass * G, rel=1e-6)
     assert m.body_mass.sum() == pytest.approx(
-        ballast.total_mass + N_LINKS * B.COB_MASS, rel=1e-9)
+        ballast.total_mass + N_POINTS * B.COB_MASS, rel=1e-9)
     assert ballast.beta_at(air) == pytest.approx(beta, rel=1e-12)
 
 
@@ -188,13 +190,16 @@ def test_off_leaves_the_robot_as_upstream_built_it():
 
 def test_added_mass_grows_inertia_and_not_weight():
     """Drag-only water: no kit, no buoyancy; each link gains C_a rho V of inertia
-    whose weight is compensated, so the net weight stays the land weight."""
+    (C_a by drag group) whose weight is compensated, so the net weight stays the
+    land weight."""
+    from oceanking.drag import group_of
+
     land = _robot(None, floor=False)
-    m = _robot(HydroCfg(mode="drag", added_mass_coef=0.5), floor=False)
+    m = _robot(HydroCfg(mode="drag", added_mass_coef=1.0), floor=False)
     assert m.nbody == land.nbody
     for name, entry in B.link_table()["links"].items():
         i = m.body(name).id
-        dm = 0.5 * 1000.0 * entry["volume_m3"]
+        dm = B.ADDED_MASS_CA[group_of(name)] * 1000.0 * entry["volume_m3"]
         assert m.body_mass[i] == pytest.approx(land.body_mass[i] + dm, rel=1e-9)
         scale = m.body_mass[i] / land.body_mass[i]
         np.testing.assert_allclose(m.body_inertia[i], land.body_inertia[i] * scale, rtol=1e-9)
@@ -271,13 +276,17 @@ def test_an_upside_down_robot_rests_on_its_crown():
 @pytest.mark.parametrize("backend", ["native", "warp"])
 def test_added_mass_slows_the_sink(backend):
     """With added mass the same net weight accelerates more mass: the centre of
-    mass sinks at (1 - beta) M g / (M + C_a rho V_total). Drag is zeroed so only
+    mass sinks at (1 - beta) M g / (M + sum C_a rho V). Drag is zeroed so only
     added mass differs from the free-fall test above."""
-    beta, ca, t = 0.85, 0.5, 0.1
-    cfg = HydroCfg(mode="full", buoyancy_ratio=beta, drag_scale=0.0, added_mass_coef=ca)
+    from oceanking.drag import group_of
+
+    beta, t = 0.85, 0.1
+    cfg = HydroCfg(mode="full", buoyancy_ratio=beta, drag_scale=0.0, added_mass_coef=1.0)
     m = _robot(cfg, floor=False)
     ballast = cfg.ballast()
-    added = ca * 1000.0 * ballast.total_volume
+    added = 1000.0 * (
+        sum(B.ADDED_MASS_CA[group_of(n)] * e["volume_m3"] for n, e in B.link_table()["links"].items())
+        + B.ADDED_MASS_CA["crown"] * ballast.crown_volume)
     d = _home(m, z=1.0)
     steps = round(t / m.opt.timestep)
     if backend == "native":
@@ -296,7 +305,7 @@ def test_added_mass_slows_the_sink(backend):
     mujoco.mj_subtreeVel(m, d)
     com_vz = d.subtree_linvel[m.body("base_link").id][2]
     expected = -(1.0 - beta) * ballast.total_mass * G / (
-        ballast.total_mass + added + N_LINKS * B.COB_MASS) * t
+        ballast.total_mass + added + N_POINTS * B.COB_MASS) * t
     assert com_vz == pytest.approx(expected, rel=1e-3)
     # Control: it is slower than without added mass.
     assert abs(com_vz) < (1.0 - beta) * G * t * 0.8
@@ -314,8 +323,9 @@ def test_kit_and_buoyancy_points_have_their_intended_inertial_frames():
         name = m.body(b).name
         if name.endswith("_cob") or name == "oceanking_keel":
             np.testing.assert_array_equal(m.body_ipos[b], 0.0, err_msg=name)
+    water = HydroCfg(buoyancy_ratio=0.8).ballast().crown_water_mass
     np.testing.assert_allclose(m.body_ipos[m.body("oceanking_crown").id],
-                               [0.0, 0.0, crown.centre_height()], atol=1e-12)
+                               [0.0, 0.0, crown.centre_height(water)], atol=1e-12)
 
 
 def test_the_keel_trims_the_robot_level():
@@ -330,8 +340,6 @@ def test_the_keel_trims_the_robot_level():
         for b in range(m.nbody):
             if m.body(b).name.endswith("_cob"):
                 lift[b] = (m.body_gravcomp[b] - 1.0) * m.body_mass[b]
-            elif m.body(b).name == "oceanking_crown":
-                lift[b] = m.body_gravcomp[b] * m.body_mass[b]
         phys = np.array([not m.body(b).name.endswith("_cob") for b in range(m.nbody)])
         com = (m.body_mass[phys, None] * d.xipos[phys]).sum(0) / m.body_mass[phys].sum()
         cob = (lift[:, None] * d.xipos).sum(0) / lift.sum()
@@ -340,3 +348,26 @@ def test_the_keel_trims_the_robot_level():
     for beta in (0.7, 0.8, 0.95):
         np.testing.assert_allclose(offset(HydroCfg(mode="buoyancy", buoyancy_ratio=beta)),
                                    0.0, atol=1e-6)
+
+
+@pytest.mark.parametrize("beta", [0.6, 0.8, 0.95])
+def test_the_keel_lies_inside_the_hull(beta):
+    """The keel adds no displacement only if it is inside the sealed hull. With a
+    120 x 100 mm footprint its corners stuck out of the rounded floor (review);
+    every corner of the plate must be inside the base link's collision hull."""
+    from scipy.spatial import Delaunay
+
+    m = _robot(HydroCfg(mode="buoyancy", buoyancy_ratio=beta), floor=False)
+    d = _home(m, z=1.0)
+    mujoco.mj_forward(m, d)
+    base = m.body("base_link").id
+    hull = next(g for g in range(m.ngeom) if m.geom_bodyid[g] == base and m.geom_group[g] == 1)
+    mid = m.geom_dataid[hull]
+    v = m.mesh_vert[m.mesh_vertadr[mid]:m.mesh_vertadr[mid] + m.mesh_vertnum[mid]]
+    tri = Delaunay(v @ d.geom_xmat[hull].reshape(3, 3).T + d.geom_xpos[hull])
+    plate = m.geom("oceanking_keel_plate").id
+    h = m.geom_size[plate]
+    corners = np.array([[sx * h[0], sy * h[1], sz * h[2]]
+                        for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
+    world = corners @ d.geom_xmat[plate].reshape(3, 3).T + d.geom_xpos[plate]
+    assert (tri.find_simplex(world) >= 0).all()

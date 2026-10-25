@@ -1,27 +1,79 @@
 {
   "fingerprint": {
     "model_sha256": "3342ca15a5bbcaf40e1f16dedb60044b91360dddae5f7f03f05eb3e6c830cf37",
-    "crown_outer_volume_m3": 0.00097723
+    "crown_outer_volume_m3": 0.00097723,
+    "cd_target": {
+      "torso": 1.0,
+      "crown": 1.0,
+      "legs": 1.1,
+      "arms": 1.1
+    }
   },
-  "cd_target_head_on": 1.0,
   "speed_m_s": 0.3,
+  "groups": {
+    "arms": {
+      "geoms": 20,
+      "units": [
+        "LF",
+        "RF"
+      ],
+      "raw_force_head_on_N": 2.268960965617219,
+      "reference_area_m2": 0.019423000000000003,
+      "raw_Cd": 2.595961220794612,
+      "target_Cd": 1.1,
+      "factor": 0.42373514334058315
+    },
+    "crown": {
+      "geoms": 13,
+      "units": [
+        "crown"
+      ],
+      "raw_force_head_on_N": 1.3120143556667963,
+      "reference_area_m2": 0.011312,
+      "raw_Cd": 2.57742879865393,
+      "target_Cd": 1.0,
+      "factor": 0.3879835596320849
+    },
+    "legs": {
+      "geoms": 16,
+      "units": [
+        "LM",
+        "LR",
+        "RM",
+        "RR"
+      ],
+      "raw_force_head_on_N": 2.0994489618304213,
+      "reference_area_m2": 0.03152,
+      "raw_Cd": 1.4801529623733933,
+      "target_Cd": 1.1,
+      "factor": 0.7431664347961536
+    },
+    "torso": {
+      "geoms": 5,
+      "units": [
+        "torso"
+      ],
+      "raw_force_head_on_N": 2.0059973442978656,
+      "reference_area_m2": 0.012544000000000001,
+      "raw_Cd": 3.5537084472396994,
+      "target_Cd": 1.0,
+      "factor": 0.2813961850969339
+    }
+  },
+  "raw_force_head_on_N": 7.891769647402064,
   "head_on_x": {
     "silhouette_m2": 0.055077,
-    "raw_CdA_m2": 0.1707493187966484,
-    "raw_Cd": 3.1001927991112153,
-    "calibrated_Cd": 1.0
+    "raw_Cd": 3.1841360065209976,
+    "calibrated_Cd": 1.4843299441184887
   },
   "side_on_y": {
     "silhouette_m2": 0.042204,
-    "raw_CdA_m2": 0.1694193396691552,
-    "raw_Cd": 4.014295793506663,
-    "calibrated_Cd": 1.2948535957691112
+    "raw_Cd": 4.127714970393353,
+    "calibrated_Cd": 1.9432468095008013
   },
   "heave_z": {
     "silhouette_m2": 0.069152,
-    "raw_CdA_m2": 0.1946780497003025,
-    "raw_Cd": 2.8152193674847075,
-    "calibrated_Cd": 0.9080788034511255
-  },
-  "calibration_factor": 0.3225605840664771
+    "raw_Cd": 2.9276636621204113,
+    "calibrated_Cd": 1.3984866218988072
+  }
 }
