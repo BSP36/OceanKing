@@ -39,6 +39,10 @@ A static estimate (all of the net weight on the feet); a gait that lifts feet ca
 weight on fewer of them, so the total friction is the same. Evaluation reports, for each cell,
 whether the command was within this limit, and "at the commanded velocity" is judged only there.
 
+**Beyond the limit the crab is allowed to be carried away** (decided 2026-10-25): no policy can
+hold there, and a real crab is swept off by a strong enough flow too. Training stays inside the
+limit for standing (section 4); evaluation shows what happens outside it.
+
 ## 2. Starting point
 
 Fine-tune from the official `jumper.posture` checkpoint (`model_74800.pt`): same network, same
@@ -91,16 +95,26 @@ stated as such (decided 2026-10-25).
 
 ## 6. Reward
 
-Upstream's rewards and weights, unchanged, except:
+Upstream's 25 terms and weights, unchanged, except the two that measure foot load in newtons.
+Reviewed term by term (2026-10-25):
 
 | Term | Upstream | Underwater |
 |---|---|---|
-| `stance_load` threshold | 5 N per foot | scaled per environment by `(1 - beta) M / M_land` (the net weight it can actually press with) |
-| `stance_load_stand` threshold | 3 N per foot | same scaling |
+| `track_linear_velocity` (+2), `track_angular_velocity` (+2) | velocity over the ground vs the command | unchanged: this *is* the goal. Standing in a current is a zero command, tracked only by not drifting (a 0.07 m/s drift costs 11% of the term at std 0.2) |
+| `stance_load` (+0.5) | stance feet loaded to 5 N each | threshold scaled per environment by its net weight over the land weight, `(1 - beta) M / m_land` (beta 0.8: 2.2 N) |
+| `stance_load_stand` (+1.167) | standing feet loaded to 3 N each | same scaling (beta 0.8: 1.3 N) |
+| `soft_touchdown` (−4.5) | foot's downward speed just before touchdown | unchanged: a speed, independent of weight |
+| `foot_slip` (−0.5), `standing_sway` (−0.1) | foot slip in contact; body motion while standing | unchanged; both already resist being carried |
+| `energy` (−0.02), `torque_headroom` (−1) | actuator power; torque beyond 69% of the limit | unchanged: servo protection, which resisting a current must respect |
+| the rest (gait, posture, clearance, limits, smoothness) | | unchanged |
 
-Without this the two terms can never saturate underwater and push the policy to press its feet
-harder than the water allows (review of 2026-10-25). Command tracking is the incentive to hold
-station: a zero command in a current is tracked only by not drifting.
+Without the scaling, the two load terms cannot saturate underwater (the net weight is 10.8 N at
+beta 0.8 against 25 N on land) and push the policy to press its feet harder than the water allows
+(review of 2026-10-25).
+
+**Watched during training**, not rewarded: drift while commanded to stand, and the share of
+episodes inside the traction limit. If drift does not fall, the first lever is `standing_sway`'s
+weight.
 
 ## 7. Commands
 
