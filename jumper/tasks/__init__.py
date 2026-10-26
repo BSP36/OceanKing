@@ -90,3 +90,4 @@ __all__ = [
 # [oceanking] OceanKing's tasks: tasks/ocean is a symlink into /oceanking/tasks.
 from .ocean import posture  # noqa: F401,E402
 from .ocean import walk  # noqa: F401,E402
+from .ocean import jump  # noqa: F401,E402

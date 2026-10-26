@@ -45,7 +45,9 @@ class TrajectoryRecorder:
         self._t.append(self._count * self._step_dt)
         self._pos.append((data.root_link_pos_w - self._origins).detach().cpu().numpy())
         self._quat.append(data.root_link_quat_w.detach().cpu().numpy())
-        twist = env.command_manager.get_command("twist")
+        # A task without a velocity command (ocean.jump) records zeros.
+        twist = (env.command_manager.get_command("twist")
+                 if "twist" in env.command_manager.active_terms else None)
         self._cmd.append(
             np.zeros((self._pos[-1].shape[0], 3)) if twist is None
             else twist[:, :3].detach().cpu().numpy()
