@@ -70,14 +70,21 @@ ran out, which under water is mid-flight, and `back_home` would end the episode 
 
 ## 4. Reward
 
-Upstream's terms and weights, with these changes:
+Upstream's terms and weights, with these changes (as of run 2):
 
 | Term | Upstream | ocean.jump |
 |---|---|---|
 | `landing_target` (new, +6) | | `exp(-|landing - target|^2 / 0.08^2)`, paid every step after the episode's own jump has landed, nothing after a second jump |
-| `apex_height` (+4) | rise of the lowest point / 0.1 m, after landing | the same **times the landing accuracy**: height counts only on a jump that lands where aimed |
+| `landing_near` (new, +4) | | the same with a 0.25 m kernel: still pays a full-strength jump that lands 0.3 m off (0.24) |
+| `apex_height` (+4) | rise of the lowest point / 0.1 m, after landing | the same **times the wide landing accuracy**: height counts on a jump that lands roughly where aimed |
 | `flight_height` (+2) | rise during flight | **0**: it pays every airborne step, and at beta 0.98 a flight lasts seconds, which would pay more than any landing |
-| `horizontal_drift` (−1) | distance from the start | `anchored_drift`: from the take-off point before the jump, nothing in flight, from the landing point after it (no shuffling towards the target, no sliding after landing) |
+| `horizontal_drift` (−1) | distance from the start | `anchored_drift`: beyond 0.05 m from the take-off point before the jump, nothing in flight, from the landing point after it (no shuffling towards the target, no sliding after landing) |
+
+**Run 1 (stopped at iteration 6650 of 9000)** had only the narrow kernel, scaled the apex by it,
+and charged all travel before take-off. At its iteration 6500 the policy landed within 0.06 m of
+its take-off point whatever the target (mean error 0.25 m over aimed targets, the official 0.27 m)
+and jumped lower (rise 0.12 m at beta 0.8, the official 0.16 m): a missed full-strength target paid
+`exp(-14)`, nothing to climb, while not aiming kept the drift penalty and the apex scaling quiet.
 
 ## 5. Training
 

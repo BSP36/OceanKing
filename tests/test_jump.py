@@ -97,3 +97,14 @@ def test_landing_reward_and_drift_anchor(env):
     assert torch.allclose(mdp.landing_target(env, sigma=0.08), torch.full((N,), math.exp(-1)))
     cmd.in_flight[:] = True
     assert (mdp.anchored_drift(env, scale=0.1) == 0).all()
+
+
+def test_drift_before_take_off_has_a_deadband(env):
+    from tasks.ocean.jump import mdp
+
+    cmd = env.command_manager.get_term("jump")
+    cmd.landed[:] = False
+    cmd.in_flight[:] = False
+    d = cmd.position().norm(dim=1)
+    expect = (d - 0.05).clamp(min=0.0).square() / 0.01
+    assert torch.allclose(mdp.anchored_drift(env, scale=0.1, deadband=0.05), expect)

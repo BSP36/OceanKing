@@ -27,10 +27,18 @@ FRICTION_RANGE = (0.4, 0.8)
 #: Landing distance at full strength, m, and the share of straight-up episodes.
 REACH = 0.3
 UPRIGHT_SHARE = 0.2
-#: Landing-accuracy kernel width, m, and the landing term's weight (the apex term
-#: is upstream's 4, times the same accuracy).
+#: Landing accuracy: a narrow kernel for precision and a wide one that still pays
+#: a jump that lands 0.3 m off (run 1: with the narrow one alone, exp(-14) for
+#: a missed full-strength target, the policy learnt to land where it took off).
 LANDING_SIGMA = 0.08
 LANDING_WEIGHT = 6.0
+LANDING_WIDE_SIGMA = 0.25
+LANDING_WIDE_WEIGHT = 4.0
+#: The apex term (upstream's 4) is scaled by the wide accuracy: run 1, scaled by
+#: the narrow one, lowered its jumps while it could not yet aim.
+APEX_SIGMA = LANDING_WIDE_SIGMA
+#: Body travel before take-off that the drift term does not charge, m.
+DRIFT_DEADBAND = 0.05
 #: Upstream's 2.5 s episode is shorter than a flight at high beta (up to ~6 s).
 EPISODE_S = 8.0
 
@@ -87,12 +95,16 @@ def env_cfg(
         raise RuntimeError("upstream's jump rewards changed")
     drift = cfg.rewards.pop("horizontal_drift")
     cfg.rewards["anchored_drift"] = RewardTermCfg(
-        func=mdp.anchored_drift, weight=drift.weight, params=dict(drift.params))
+        func=mdp.anchored_drift, weight=drift.weight,
+        params={**drift.params, "deadband": DRIFT_DEADBAND})
     apex = cfg.rewards["apex_height"]
     apex.func = mdp.apex_on_target
-    apex.params = {**apex.params, "sigma": LANDING_SIGMA}
+    apex.params = {**apex.params, "sigma": APEX_SIGMA}
     cfg.rewards["landing_target"] = RewardTermCfg(
         func=mdp.landing_target, weight=LANDING_WEIGHT, params={"sigma": LANDING_SIGMA})
+    cfg.rewards["landing_near"] = RewardTermCfg(
+        func=mdp.landing_target, weight=LANDING_WIDE_WEIGHT,
+        params={"sigma": LANDING_WIDE_SIGMA})
     # The in-flight height pays every airborne step: at beta 0.98 a flight lasts
     # seconds and would pay more than any landing (docs/JUMP.md section 4).
     if "flight_height_weight" in cfg.curriculum:

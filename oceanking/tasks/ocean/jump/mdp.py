@@ -161,15 +161,19 @@ def apex_on_target(env: Any, command_name: str = "jump", scale: float = 0.10,
     return apex_height(env, command_name, scale) * landing_accuracy(cmd, sigma)
 
 
-def anchored_drift(env: Any, command_name: str = "jump", scale: float = 0.10) -> torch.Tensor:
+def anchored_drift(env: Any, command_name: str = "jump", scale: float = 0.10,
+                   deadband: float = 0.0) -> torch.Tensor:
     """Upstream's `horizontal_drift` with a moving anchor: the take-off point
     until the jump, nothing in flight, the landing point after it. So the robot
-    neither shuffles towards the target nor slides on after landing."""
+    neither shuffles towards the target nor slides on after landing. Before the
+    jump only the distance beyond `deadband` counts: an aimed push leans the body
+    over the feet (run 1: the full penalty there held every jump vertical)."""
     cmd = env.command_manager.get_term(command_name)
     p = cmd.position()
     anchor = torch.where(cmd.landed.unsqueeze(1), cmd.landing, torch.zeros_like(p))
-    d = (p - anchor).square().sum(dim=1) / scale**2
-    return d * (~cmd.in_flight).float()
+    d = (p - anchor).norm(dim=1)
+    d = torch.where(cmd.landed, d, (d - deadband).clamp(min=0.0))
+    return d.square() / scale**2 * (~cmd.in_flight).float()
 
 
 __all__ = [
