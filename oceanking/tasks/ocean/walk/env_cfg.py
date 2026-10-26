@@ -50,10 +50,22 @@ REACHABLE_SHARE = 0.5
 #: Tracking kernel width as a share of the traction limit (upstream's 0.2 m/s land
 #: width is the upper clamp): a 0.07 m/s shortfall of a 0.24 m/s target cost 0.2/s.
 TRACK_STD_FRACTION = 0.4
-TRACK_STD_MIN = 0.05
+#: Run 4: a moving target narrows the width further to this share of its speed
+#: (review of run 3: at 0.4 v_lim, ~0.15 m/s, walking 0.10 for a 0.15 command cost
+#: less than the style terms paid for the slower gait). Not below TRACK_STD_MIN:
+#: the error includes the vertical speed.
+TRACK_TARGET_FRACTION = 0.5
+TRACK_STD_MIN = 0.06
 #: Weight of the progress term for out-of-reach commands (slope ~4/(m/s) at
 #: typical limits, against ~3/(m/s) the style terms pay for slowing; review of run 2).
-PROGRESS_WEIGHT = 1.5
+#: Run 4: 1.5 -> 2.0, since it now also pays reachable commands, where 1.5 only broke
+#: even with what the style terms pay for a shorter stride (review of run 3).
+PROGRESS_WEIGHT = 2.0
+#: Run 4: the progress term also pays reachable commands of at least this speed,
+#: m/s, their ground speed along the command as a share of it.
+PROGRESS_REACHABLE_MIN = 0.08
+#: Run 4: share of the reachable commands that walk straight (no yaw rate).
+STRAIGHT_SHARE = 0.5
 #: Upstream's foot-load thresholds, N, scaled per environment by its net weight.
 STANCE_LOAD_N = 5.0
 STANCE_LOAD_STAND_N = 3.0
@@ -124,11 +136,13 @@ def env_cfg(
         raise RuntimeError(f"upstream's track_linear_velocity params changed: {track.params}")
     track.func = water.track_feasible_velocity
     track.params.update(margin=TRACTION_MARGIN, std_fraction=TRACK_STD_FRACTION,
-                        std_min=TRACK_STD_MIN)
+                        std_min=TRACK_STD_MIN, target_fraction=TRACK_TARGET_FRACTION)
     cfg.rewards["water_progress"] = RewardTermCfg(
-        func=water.progress_beyond_reach, weight=PROGRESS_WEIGHT,
+        func=water.progress_towards_command, weight=PROGRESS_WEIGHT,
         params={"command_name": "twist", "std": track.params["std"],
-                "std_fraction": TRACK_STD_FRACTION, "std_min": TRACK_STD_MIN})
+                "std_fraction": TRACK_STD_FRACTION, "std_min": TRACK_STD_MIN,
+                "target_fraction": TRACK_TARGET_FRACTION,
+                "reachable_min": PROGRESS_REACHABLE_MIN})
 
     # ── commands (training): a share drawn inside what this environment can walk.
     # A replay keeps upstream's operator command, which the pad, the keyboard and
@@ -139,7 +153,8 @@ def env_cfg(
             raise RuntimeError(f"upstream's twist command is a {type(twist).__name__} now")
         cfg.commands["twist"] = water.OceanVelocityCommandCfg(
             **{f.name: getattr(twist, f.name) for f in dataclasses.fields(twist)},
-            reachable_share=REACHABLE_SHARE, walk_fraction=WALK_FRACTION)
+            reachable_share=REACHABLE_SHARE, walk_fraction=WALK_FRACTION,
+            straight_share=STRAIGHT_SHARE)
 
     cfg.metrics["feasible_tracking_error"] = MetricsTermCfg(
         func=water.feasible_tracking_error, params={"margin": TRACTION_MARGIN})

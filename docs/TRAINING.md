@@ -187,6 +187,36 @@ training:
 The actor's current observation carries flow-sensor noise on its horizontal components only (the
 vertical one is always zero; noise there was a pure-noise input).
 
+**Run 3 result and run 4 (2026-10-26).** Run 3 (1500 iterations from the official checkpoint)
+passed the current, station-keeping and no-fall criteria of section 9 (into head currents 1.1–1.3x
+the official speed, standing drift at or below the official's) but not the small-command one:
+0.15 m/s commands walked 0.70–0.75x the official speed, declining with training (forward 0.102 at
+iteration 75100, 0.065 at 75800), and backward 0.3 m/s about 0.7x everywhere. Two reviewers (reward
+accounting replayed per term; gait recording) agreed on the mechanism:
+
+- at the 2 Hz cadence floor of upstream's gait clock, small-command speed is stride length only,
+  and run 3 strides 18 mm where the official policy strides 29 mm (forward 0.15), with the same slip
+  efficiency;
+- the reward prefers it: per second, run 3 earns 0.3–0.4 **more** than the official gait at 0.15
+  commands, losing 0.3–0.6 on tracking and gaining more on `tripod_gait` (clean contacts),
+  `track_height` (land width 0.01 m), `foot_swing_height` and `stance_load`. With the kernel width
+  0.4 v_lim (0.145 m/s at beta 0.8, friction 0.5), walking 0.10 m/s for a 0.15 command cost 0.22/s;
+- straight small commands were rare: the in-disk draw kept upstream's yaw rate (uniform ±4 rad/s or
+  heading control), so only ~5% of training looked like walking straight at 0.1–0.2 m/s.
+
+Run 4 changes the reward and commands, nothing else:
+
+| Change | Value |
+|---|---|
+| tracking width for a moving target | `min(0.4 v_lim, max(0.5 |target|, 0.06))` (`TRACK_TARGET_FRACTION`, `TRACK_STD_MIN`) |
+| `water_progress` also pays reachable commands ≥ 0.08 m/s: ground speed along the command / its speed, clipped to [0, 1], times staying on its line | `progress_towards_command`, weight 1.5 → 2.0 |
+| half of the in-disk commands walk straight (no yaw rate, no heading control); in-disk commands stay body-frame | `STRAIGHT_SHARE = 0.5` |
+
+Considered and left: widening `track_height` (its width is set by upstream's posture curriculum),
+lowering `tripod_gait` (it rewards clean contacts, not wrong in itself). Run 4 starts again from the
+official checkpoint, and its checkpoints are evaluated every 100 iterations, since the last one need
+not be the best.
+
 ### 6.2 Foot loads follow the net weight
 
 | Term | Upstream | Underwater |

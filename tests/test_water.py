@@ -221,8 +221,9 @@ def test_the_walk_task_tracks_the_feasible_velocity():
     track = cfg.rewards["track_linear_velocity"]
     assert track.func is water.track_feasible_velocity
     # std is upstream's curriculum's; the rest are ocean.walk's.
-    assert set(track.params) == {"std", "command_name", "margin", "std_fraction", "std_min"}
-    assert cfg.rewards["water_progress"].func is water.progress_beyond_reach
+    assert set(track.params) == {"std", "command_name", "margin", "std_fraction", "std_min",
+                                 "target_fraction"}
+    assert cfg.rewards["water_progress"].func is water.progress_towards_command
     assert isinstance(cfg.commands["twist"], water.OceanVelocityCommandCfg)
 
 
@@ -296,6 +297,80 @@ def test_progress_pays_for_speed_towards_an_out_of_reach_command():
     p = [water.progress_beyond_reach(env_with(far, (v, 0.0))).item() for v in (0.0, 0.1, 0.2, 0.3)]
     assert p[0] == 0.0 and p[0] < p[1] < p[2] < p[3]
     assert water.progress_beyond_reach(env_with([0.1, 0.0, 0.0], (0.1, 0.0))).item() == 0.0
+
+
+def _point_env(cmd, vel):
+    from types import SimpleNamespace
+
+    from oceanking import water
+
+    class Env(SimpleNamespace):
+        pass
+
+    robot = SimpleNamespace(data=SimpleNamespace(
+        root_link_lin_vel_b=torch.tensor([[vel[0], vel[1], 0.0]]),
+        root_link_quat_w=torch.tensor([[1.0, 0.0, 0.0, 0.0]])))
+    e = Env(num_envs=1, device="cpu", scene={"robot": robot},
+            command_manager=SimpleNamespace(get_command=lambda name: torch.tensor([cmd])))
+    e.ocean = water.OceanState(beta=torch.tensor([0.8]), current_w=torch.zeros(1, 3),
+                               friction=torch.tensor([0.5]), load_scale=torch.ones(1),
+                               net_weight=torch.tensor([10.8]))
+    return e
+
+
+def test_progress_pays_command_gain_for_reachable_commands():
+    """Run 4: a reachable command of at least reachable_min pays its ground speed
+    along it as a share of it, saturating at the command; tiny commands, none."""
+    from oceanking import water
+
+    kw = dict(std=0.2, std_fraction=0.4, std_min=0.06, target_fraction=0.5, reachable_min=0.08)
+    small = [0.15, 0.0, 0.0]
+    p = [water.progress_towards_command(_point_env(small, (v, 0.0)), **kw).item()
+         for v in (0.0, 0.05, 0.10, 0.15, 0.20)]
+    assert p[0] == 0.0 and p[1] < p[2] < p[3]
+    assert p[3] == pytest.approx(1.0) and p[4] == pytest.approx(1.0)
+    # Off its line it pays less; below reachable_min, nothing.
+    assert water.progress_towards_command(_point_env(small, (0.15, 0.1)), **kw).item() < 0.5
+    assert water.progress_towards_command(_point_env([0.05, 0.0, 0.0], (0.05, 0.0)), **kw).item() == 0.0
+    # Out of reach: the same as progress_beyond_reach.
+    far = [0.8, 0.0, 0.0]
+    assert water.progress_towards_command(_point_env(far, (0.2, 0.0)), **kw).item() == pytest.approx(
+        water.progress_beyond_reach(_point_env(far, (0.2, 0.0)), std=0.2, std_fraction=0.4, std_min=0.06))
+
+
+def test_tracking_width_narrows_with_a_small_moving_target():
+    """Run 4: the kernel is target_fraction x the target's speed for a moving
+    target, the limit-based width for a standing one, never below std_min."""
+    from oceanking import water
+
+    env = _point_env([0.15, 0.0, 0.0], (0.0, 0.0))
+    wide = water.tracking_std(env, 0.2, 0.4, 0.06)
+    assert wide.item() > 0.1
+    for speed, expect in ((0.15, 0.075), (0.08, 0.06), (0.0, wide.item()), (0.8, wide.item())):
+        w = water.tracking_std(env, 0.2, 0.4, 0.06, torch.tensor([[speed, 0.0]]), 0.5)
+        assert w.item() == pytest.approx(expect)
+    # A 0.10 m/s walk for a 0.15 command now costs more than 0.5 of the term.
+    r = water.track_feasible_velocity(_point_env([0.15, 0.0, 0.0], (0.10, 0.0)), std=0.2,
+                                      command_name="twist", std_fraction=0.4, std_min=0.06,
+                                      target_fraction=0.5)
+    assert r.item() < 0.7
+
+
+def test_straight_share_clears_yaw_and_heading(env):
+    from oceanking import water
+
+    term = env.command_manager.get_term("twist")
+    saved = term.cfg.straight_share, term.cfg.reachable_share
+    term.cfg.straight_share, term.cfg.reachable_share = 1.0, 1.0
+    ids = torch.arange(env.num_envs, device=env.device)
+    term._resample_command(ids)
+    moving = ~term.is_standing_env
+    assert torch.all(term.vel_command_b[moving, 2] == 0.0)
+    assert not term.is_world_env[moving].any()
+    if hasattr(term, "is_heading_env"):
+        assert not term.is_heading_env[moving].any()
+    term.cfg.straight_share, term.cfg.reachable_share = saved
+    assert isinstance(term.cfg, water.OceanVelocityCommandCfg) and saved[0] == 0.5
 
 
 def test_reachable_commands_are_drawn_inside_the_walkable_disk(env):

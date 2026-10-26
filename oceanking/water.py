@@ -276,6 +276,9 @@ def feasible_velocity(env: Any, command_name: str = "twist",
 
 # ── rewards and metrics ─────────────────────────────────────────────────────
 
+#: Below this command speed, m/s, a command is "stand" (upstream's threshold).
+STANDING_SPEED = 0.05
+
 
 def feasible_error_sq(command: torch.Tensor, actual: torch.Tensor, centre: torch.Tensor,
                       radius: torch.Tensor) -> torch.Tensor:
@@ -300,27 +303,43 @@ def feasible_error_sq(command: torch.Tensor, actual: torch.Tensor, centre: torch
     return torch.where(inside, within, outside)
 
 
-def tracking_std(env: Any, std: float, std_fraction: float | None, std_min: float) -> torch.Tensor:
+def tracking_std(env: Any, std: float, std_fraction: float | None, std_min: float,
+                 target: torch.Tensor | None = None,
+                 target_fraction: float | None = None) -> torch.Tensor:
     """The tracking kernel's width, [N]: upstream's land `std` (0.2 m/s), or, with
     `std_fraction`, that fraction of each environment's traction limit (clamped to
     [std_min, std]) -- so a shortfall of a given share of what is possible costs the
-    same everywhere, instead of almost nothing where little is possible."""
+    same everywhere, instead of almost nothing where little is possible.
+
+    With `target_fraction` and the target velocity ([N, 2]), a moving target
+    narrows it further to that fraction of the target's speed (never below
+    `std_min`): at the limit-based width alone (0.145 m/s at beta 0.8, friction
+    0.5) walking 0.10 m/s for a 0.15 command cost only 0.22/s, less than the style
+    terms pay for the slower gait (review of run 3). A target under the standing
+    threshold keeps the limit-based width."""
     if std_fraction is None:
         return torch.full((env.num_envs,), float(std), device=env.device)
-    return (std_fraction * traction_limit(env)).clamp(std_min, std)
+    width = (std_fraction * traction_limit(env)).clamp(std_min, std)
+    if target_fraction is None or target is None:
+        return width
+    speed = torch.linalg.norm(target, dim=1)
+    narrow = torch.minimum(width, (target_fraction * speed).clamp_min(std_min))
+    return torch.where(speed >= STANDING_SPEED, narrow, width)
 
 
 def track_feasible_velocity(env: Any, std: float, command_name: str, margin: float = 1.0,
-                            std_fraction: float | None = None,
-                            std_min: float = 0.05) -> torch.Tensor:
+                            std_fraction: float | None = None, std_min: float = 0.05,
+                            target_fraction: float | None = None) -> torch.Tensor:
     """Upstream's `track_linear_velocity`, scored against what the physics allows
     (`feasible_error_sq`): full marks for the best possible (docs/TRAINING.md
     section 6). `std` is upstream's, which its curriculum sets; see `tracking_std`."""
     cmd = env.command_manager.get_command(command_name)[:, :2]
     actual = env.scene["robot"].data.root_link_lin_vel_b
-    error = feasible_error_sq(cmd, actual[:, :2], current_body(env)[:, :2],
-                              traction_limit(env, margin))
-    width = tracking_std(env, std, std_fraction, std_min)
+    centre = current_body(env)[:, :2]
+    limit = traction_limit(env, margin)
+    error = feasible_error_sq(cmd, actual[:, :2], centre, limit)
+    target = project_to_disk(cmd, centre, limit)[0] if target_fraction is not None else None
+    width = tracking_std(env, std, std_fraction, std_min, target, target_fraction)
     return torch.exp(-(error + actual[:, 2].square()) / width.square())
 
 
@@ -345,6 +364,32 @@ def progress_beyond_reach(env: Any, command_name: str = "twist", std: float = 0.
     width = tracking_std(env, std, std_fraction, std_min)
     share = (along / limit.clamp_min(1e-6)).clamp(0.0, 1.0)
     return outside.float() * share * torch.exp(-across / width.square())
+
+
+def progress_towards_command(env: Any, command_name: str = "twist", std: float = 0.2,
+                             std_fraction: float | None = None, std_min: float = 0.05,
+                             target_fraction: float | None = None,
+                             reachable_min: float = 0.08) -> torch.Tensor:
+    """`progress_beyond_reach`, extended to reachable commands of at least
+    `reachable_min` m/s: there, the ground speed along the command as a share of
+    it (clipped to [0, 1]), times staying on its line. A slope of 1/|command| that
+    the exp kernel's flat top lacks, so a small command is worth following at its
+    full speed (review of run 3: the policy's command gain kept shrinking because
+    the style terms paid more for a slower gait than tracking charged)."""
+    cmd = env.command_manager.get_command(command_name)[:, :2]
+    actual = env.scene["robot"].data.root_link_lin_vel_b[:, :2]
+    centre = current_body(env)[:, :2]
+    limit = traction_limit(env)
+    speed = torch.linalg.norm(cmd, dim=1)
+    inside = (torch.linalg.norm(cmd - centre, dim=1) <= limit) & (speed >= reachable_min)
+    u = cmd / speed.clamp_min(1e-9).unsqueeze(1)
+    along = (actual * u).sum(dim=1)
+    across = (actual - along.unsqueeze(1) * u).square().sum(dim=1)
+    width = tracking_std(env, std, std_fraction, std_min, cmd, target_fraction)
+    share = (along / speed.clamp_min(1e-6)).clamp(0.0, 1.0)
+    within = inside.float() * share * torch.exp(-across / width.square())
+    beyond = progress_beyond_reach(env, command_name, std, std_fraction, std_min)
+    return within + beyond
 
 
 def feasible_tracking_error(env: Any, command_name: str = "twist",
@@ -437,13 +482,26 @@ class OceanVelocityCommand(UniformVelocityCommand):
         centre = current_body(env)[ids, :2]
         self.vel_command_b[ids, 0] = centre[:, 0] + r * torch.cos(a)
         self.vel_command_b[ids, 1] = centre[:, 1] + r * torch.sin(a)
+        # The disk is drawn in the heading frame, so these commands stay body-frame
+        # (a world-frame env would have rotated them away from the disk).
+        self.is_world_env[ids] = False
         self.vel_command_w[ids] = self.vel_command_b[ids]
+        # A share walk straight: upstream's yaw rate (uniform +/-4 rad/s, or heading
+        # control) turned faster than 1 rad/s in 55% of small commands, so only
+        # ~5% of training resembled walking straight at 0.1-0.2 m/s (review of run 3).
+        straight = ids[torch.rand(len(ids), device=self.device) < self.cfg.straight_share]
+        self.vel_command_b[straight, 2] = 0.0
+        self.vel_command_w[straight, 2] = 0.0
+        if hasattr(self, "is_heading_env"):
+            self.is_heading_env[straight] = False
 
 
 @_dataclass(kw_only=True)
 class OceanVelocityCommandCfg(UniformVelocityCommandCfg):
     reachable_share: float = 0.5
     walk_fraction: float = 0.65
+    #: Share of the reachable commands given no yaw rate (and no heading control).
+    straight_share: float = 0.0
 
     def build(self, env: Any) -> OceanVelocityCommand:
         return OceanVelocityCommand(self, env)
