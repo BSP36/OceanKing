@@ -53,6 +53,11 @@ def _run(ckpt: Path, stem: Path, beta: float, target: tuple[float, float]) -> Pa
 
 
 def score(npz: Path, target: tuple[float, float]) -> dict:
+    """The first episode's jump: the landing point is where the body comes back
+    down at the end of its longest airborne stretch (the touchdown, as training
+    latches it), not the episode's last position, which includes whatever the
+    robot does after landing (the official policy shuffles 0.24 m forward after
+    its jump at beta 0.8)."""
     z = np.load(npz)
     t, p, q, ep = z["t"], z["root_pos"][0], z["root_quat_wxyz"][0], z["episode_step"][0]
     resets = np.where(np.diff(ep) < 0)[0]
@@ -63,9 +68,22 @@ def score(npz: Path, target: tuple[float, float]) -> dict:
     air = p[:, 2] > z0 + AIR_RISE
     s, deg = target
     goal = s * REACH * np.array([math.cos(math.radians(deg)), math.sin(math.radians(deg))])
-    land = p[-1, :2]
+    # Longest run of airborne samples.
+    best, start, run_start = (0, 0, 0), None, None
+    for i, a in enumerate(np.append(air, False)):
+        if a and run_start is None:
+            run_start = i
+        elif not a and run_start is not None:
+            if i - run_start > best[0]:
+                best = (i - run_start, run_start, i)
+            run_start = None
+    n, a, b = best
+    land = p[min(b, len(p) - 1), :2] if n else p[-1, :2]
+    take_off = p[a, :2] if n else p[0, :2]
     return {"landing": land.round(4).tolist(), "target": goal.round(4).tolist(),
             "error_m": float(np.linalg.norm(land - goal)),
+            "flight_m": (land - take_off).round(4).tolist(),
+            "after_landing_m": float(np.linalg.norm(p[-1, :2] - land)),
             "rise_m": float(p[:, 2].max() - z0),
             "airtime_s": float(air.sum() * (t[1] - t[0])),
             "min_upright": float(up.min()), "episode_s": float(t[-1])}
@@ -79,16 +97,20 @@ def evaluate_policy(ckpt: Path, label: str, out: Path, pool) -> dict:
     res = {"checkpoint": str(ckpt), "runs": {}}
     for (b, name), job in jobs.items():
         res["runs"][f"b{b}_{name}"] = score(job.result(), TARGETS[name])
-    runs = res["runs"].values()
-    aimed = [r for k, r in res["runs"].items() if not k.endswith("_up")]
-    res["summary"] = {
+    res["summary"] = _summary(res["runs"])
+    return res
+
+
+def _summary(runs_by_name: dict) -> dict:
+    runs = runs_by_name.values()
+    aimed = [r for k, r in runs_by_name.items() if not k.endswith("_up")]
+    return {
         "mean_error_m": float(np.mean([r["error_m"] for r in runs])),
         "mean_error_aimed_m": float(np.mean([r["error_m"] for r in aimed])),
         "mean_rise_m": float(np.mean([r["rise_m"] for r in runs])),
         "mean_airtime_s": float(np.mean([r["airtime_s"] for r in runs])),
         "min_upright": float(min(r["min_upright"] for r in runs)),
     }
-    return res
 
 
 def _markdown(results: dict) -> str:
@@ -113,12 +135,21 @@ def main() -> None:
     ap.add_argument("candidates", type=Path, nargs="*")
     ap.add_argument("--official", type=Path, default=OFFICIAL)
     ap.add_argument("--workers", type=int, default=10)
+    ap.add_argument("--rescore", action="store_true",
+                    help="re-score every cached policy from its saved trajectories")
     args = ap.parse_args()
     # The replays run from jumper/: every path is made absolute first.
     args.out = args.out.resolve()
     args.out.mkdir(parents=True, exist_ok=True)
     report = args.out / "report.json"
     cache = json.loads(report.read_text()) if report.exists() else {}
+    if args.rescore:
+        for label, res in cache.items():
+            for k in res["runs"]:
+                name = k.split("_", 1)[1]
+                res["runs"][k] = score(args.out / label / f"{k}.npz", TARGETS[name])
+            res["summary"] = _summary(res["runs"])
+        report.write_text(json.dumps(cache, indent=2) + "\n")
     with cf.ThreadPoolExecutor(args.workers) as pool:
         for label, ck in [("official", args.official.resolve())] + [
                 (f"{c.resolve().parent.name}_{c.stem}", c.resolve()) for c in args.candidates]:

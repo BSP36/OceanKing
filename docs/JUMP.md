@@ -134,9 +134,21 @@ PPO as ocean.walk's fine-tuning (docs/TRAINING.md section 6.4): fresh Adam at lr
 std fixed at the official values, no entropy bonus; `desired_kl` stays at upstream's 0.01, since an
 aimed jump is a new skill rather than a correction. 4096 environments: 1.2 s per iteration.
 
+**Run 5 result (2026-10-26).** 3000 iterations, then 3000 more from its last checkpoint
+(`2026-10-26_13-12-51`, `2026-10-26_17-12-54`). The jump itself is stable and as high as the
+official one (rise 0.23–0.25 m mean over beta 0.8–0.98; the official 0.22 m), lands upright, and a
+straight-up command lands within 0.02 m of its take-off point. **It does not aim**: every target
+lands within 0.06 m of the take-off point (mean error over aimed targets 0.25 m; the official
+0.28 m). `flight_progress` stayed at zero: the flights have no horizontal speed to reward, and
+per-step exploration noise (white, std 0.24 rad) averages out over a 0.2 s push, so a coordinated
+lean that would send a jump sideways is never tried.
+
 ## 6. Evaluation
 
 `oceanking.tools.evaluate_jump`: one environment, native MuJoCo on CPU, no observation noise, no
 startup randomisation; beta 0.8, 0.9, 0.98 × targets straight up, full strength forward, sideways
-(left), backward, half strength at 45°. Reported: landing point and error, rise, airtime, falls;
+(left), backward, half strength at 45°. Reported: landing point (the touchdown at the end of the longest airborne stretch,
+as training latches it, not the episode's last position: the official policy shuffles 0.24 m
+after its jump at beta 0.8, which an earlier version of this tool counted as the jump) and error,
+movement after landing, rise, airtime, falls;
 official (expanded) policy against candidates.
