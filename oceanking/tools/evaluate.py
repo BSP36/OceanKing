@@ -201,19 +201,23 @@ def main() -> None:
     ap.add_argument("--official", type=Path, default=OFFICIAL)
     ap.add_argument("--workers", type=int, default=10)
     args = ap.parse_args()
+    # The replays run from jumper/: every path is made absolute first.
+    args.out = args.out.resolve()
+    args.candidates = [c.resolve() for c in args.candidates]
+    args.official = args.official.resolve()
     args.out.mkdir(parents=True, exist_ok=True)
     report_path = args.out / "report.json"
     cache = json.loads(report_path.read_text()) if report_path.exists() else {}
     with cf.ThreadPoolExecutor(args.workers) as pool:
         if "official" not in cache:
             cache["official"] = evaluate_policy(args.official, "official", args.out, pool)
-        futures = {}
+        # One policy at a time, its runs in parallel (a policy submitted into the
+        # pool it waits on would deadlock it).
         for ck in args.candidates:
             label = f"{ck.parent.name}_{ck.stem}"
             if label not in cache:
-                futures[label] = pool.submit(evaluate_policy, ck, label, args.out, pool)
-        for label, f in futures.items():
-            cache[label] = f.result()
+                cache[label] = evaluate_policy(ck, label, args.out, pool)
+                report_path.write_text(json.dumps(cache, indent=2) + "\n")
     official = cache["official"]
     cands = {k: v for k, v in cache.items() if k not in ("official", "verdicts")}
     verdicts = {k: judge(v, official) for k, v in cands.items()}
