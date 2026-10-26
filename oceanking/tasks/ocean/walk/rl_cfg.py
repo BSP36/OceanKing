@@ -18,20 +18,17 @@ from __future__ import annotations
 
 import dataclasses
 
-import torch
 from mjlab.rl import RslRlOnPolicyRunnerCfg
 
 from ...jumper.posture import rl_cfg as _posture
 from ...jumper.posture.rl_cfg import play_status
+from ..common import FRESH_OPTIMIZER_KEY, fresh_optimizer_runner  # noqa: F401
 
 __all__ = ["agent_cfg", "play_status", "runner_cls"]
 
 DESIRED_KL = 0.005
 LEARNING_RATE = 1.0e-4
 ENTROPY_COEF = 0.0
-#: Key `oceanking.tools.expand_checkpoint` writes into a widened checkpoint: its
-#: Adam moments describe another network, so they are not restored.
-FRESH_OPTIMIZER_KEY = "oceanking_fresh_optimizer"
 
 
 def agent_cfg() -> RslRlOnPolicyRunnerCfg:
@@ -46,21 +43,4 @@ def agent_cfg() -> RslRlOnPolicyRunnerCfg:
 
 
 def runner_cls() -> type:
-    base = _posture.runner_cls()
-
-    class OceanRunner(base):
-        """Upstream's runner; a checkpoint marked by `expand_checkpoint` loads
-        without its optimiser state (a fresh Adam), everything else restored."""
-
-        def load(self, path: str, load_cfg: dict | None = None, strict: bool = True,
-                 map_location: str | None = None) -> dict:
-            if load_cfg is None:
-                saved = torch.load(path, map_location="cpu", weights_only=False)
-                if saved.get(FRESH_OPTIMIZER_KEY):
-                    load_cfg = {"actor": True, "critic": True, "optimizer": False,
-                                "iteration": True, "rnd": True}
-                    print(f"[oceanking] {path}: fresh optimiser (expanded checkpoint)")
-            return super().load(path, load_cfg, strict, map_location)
-
-    OceanRunner.__name__ = f"Ocean{base.__name__}"
-    return OceanRunner
+    return fresh_optimizer_runner(_posture.runner_cls())

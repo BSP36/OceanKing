@@ -18,7 +18,9 @@ reads, and extends everything sized by the input with it:
 
     .venv/bin/python -m oceanking.tools.expand_checkpoint OUT_DIR
 
-then `scripts/train.py --task ocean.walk --checkpoint OUT_DIR/model_74800.pt`.
+then `scripts/train.py --task ocean.walk --checkpoint OUT_DIR/model_74800.pt`; with
+`--task jump`, ocean.jump's from the official `jumper.ref_free_jump` checkpoint
+(docs/JUMP.md section 5).
 """
 
 from __future__ import annotations
@@ -32,6 +34,26 @@ import torch
 
 REPO = Path(__file__).resolve().parents[2]
 OFFICIAL = REPO / "jumper/tasks/jumper/posture/out/example/model_74800.pt"
+#: ocean.jump's starting point (docs/JUMP.md section 5).
+OFFICIAL_JUMP = REPO / "jumper/tasks/jumper/ref_free_jump/out/example/model_5999.pt"
+
+
+def jump_columns() -> dict[str, list[tuple[str, float, float]]]:
+    """(name, mean, variance) of each column ocean.jump appends (docs/JUMP.md
+    section 3), from its ranges: the target is s (uniform, 0 in `UPRIGHT_SHARE`)
+    times a uniform direction, so each component has mean 0 and variance
+    E[s^2] / 2; the offset from the target starts as minus the target, in metres."""
+    import tasks.ocean.jump.env_cfg as jump
+
+    lo, hi = jump.BETA_RANGE
+    beta = ("buoyancy_ratio", (lo + hi) / 2, (hi - lo) ** 2 / 12)
+    t = (1 - jump.UPRIGHT_SHARE) / 3 / 2  # E[s^2] = 1/3 on the aimed share
+    target = [("target_forward", 0.0, t), ("target_left", 0.0, t), ("target_up", 0.0, 1e-4)]
+    m = t * jump.REACH**2
+    offset = [("offset_forward", 0.0, m), ("offset_left", 0.0, m), ("offset_up", 0.0, 1e-4)]
+    flo, fhi = jump.FRICTION_RANGE
+    friction = ("ground_friction", (flo + fhi) / 2, (fhi - flo) ** 2 / 12)
+    return {"actor": [*target, beta], "critic": [*target, beta, friction, *offset]}
 
 
 def new_columns() -> dict[str, list[tuple[str, float, float]]]:
@@ -69,17 +91,18 @@ def _widen(state: dict, cols: list[tuple[str, float, float]]) -> tuple[int, int]
     return old, old + len(cols)
 
 
-def expand(src: Path, dst: Path) -> dict:
+def expand(src: Path, dst: Path, cols: dict | None = None) -> dict:
     ck = torch.load(src, map_location="cpu", weights_only=False)
-    cols = new_columns()
+    cols = cols or new_columns()
     widths = {"actor": _widen(ck["actor_state_dict"], cols["actor"]),
               "critic": _widen(ck["critic_state_dict"], cols["critic"])}
     for state in ck["optimizer_state_dict"]["state"].values():
         for key in ("exp_avg", "exp_avg_sq"):
             t = state[key]
             for old, new in widths.values():
-                if t.dim() == 2 and t.shape == (512, old):
+                if t.dim() == 2 and t.shape[1] == old and t.shape[0] == 512:
                     state[key] = torch.cat([t, t.new_zeros(512, new - old)], dim=1)
+                    break
     # The Adam moments above are widened to fit, but they describe the land task and
     # gave the new columns several times the normal step at first (review of run
     # 2): ocean.walk's runner starts a fresh optimiser for a checkpoint marked so.
@@ -102,9 +125,12 @@ def expand(src: Path, dst: Path) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("out", type=Path, help="directory to write the expanded checkpoint into")
-    ap.add_argument("--source", type=Path, default=OFFICIAL)
+    ap.add_argument("--task", choices=("walk", "jump"), default="walk")
+    ap.add_argument("--source", type=Path, default=None)
     args = ap.parse_args()
-    record = expand(args.source, args.out)
+    if args.source is None:
+        args.source = OFFICIAL_JUMP if args.task == "jump" else OFFICIAL
+    record = expand(args.source, args.out, jump_columns() if args.task == "jump" else None)
     print(json.dumps(record["widths"]), "->", args.out / args.source.name)
 
 
