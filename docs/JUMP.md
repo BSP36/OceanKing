@@ -143,6 +143,24 @@ lands within 0.06 m of the take-off point (mean error over aimed targets 0.25 m;
 per-step exploration noise (white, std 0.24 rad) averages out over a 0.2 s push, so a coordinated
 lean that would send a jump sideways is never tried.
 
+**Feasibility of an aimed jump (open-loop probe, 2026-10-26, `scratch/jump/lean/`).** The official
+policy (expanded checkpoint) with a fixed joint-target offset added during its first 0.4 s, beta
+0.9, straight up; displacement over the longest flight:
+
+| Offset | flight dx | rise |
+|---|---|---|
+| none | −0.113 m | 0.198 m |
+| every J0 (leg sweep) ±0.05–0.1 rad | −0.09 to −0.12 m | 0.20 m |
+| every J0 ±0.2–0.4 rad | — | 0.02–0.06 m (no jump) |
+| front J1 +0.2 rad (pitch) | −0.018 m | 0.181 m |
+| rear J1 +0.2 rad | −0.075 m | 0.194 m |
+| front J1 +0.4 rad, or front and rear ±0.2 | — | 0.01–0.03 m (no jump) |
+
+Pitching the body moves the landing by about 0.1 m with the jump intact; anything larger breaks
+the jump of a policy that was never trained for it. With the take-off speeds the policy reaches
+under water (0.5–0.8 m/s vertical) and the drag of section 2, an aimed jump is plausibly a
+0.1–0.15 m affair, not 0.3 m.
+
 ## 6. Evaluation
 
 `oceanking.tools.evaluate_jump`: one environment, native MuJoCo on CPU, no observation noise, no
