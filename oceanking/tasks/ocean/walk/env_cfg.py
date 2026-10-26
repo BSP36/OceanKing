@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
-from mjlab.utils.noise.noise_cfg import UniformNoiseCfg
+from mjlab.managers.reward_manager import RewardTermCfg
 
 from oceanking import water
 from oceanking.buoyancy import check_model
@@ -34,15 +35,25 @@ FRICTION_RANGE = (0.4, 0.8)
 BASE_COM_SCALE = 0.5
 #: Flow-sensor noise on the observed current, m/s (uniform, +/-).
 CURRENT_NOISE = 0.03
-#: Multiplier on the static traction limit in the feasible-velocity target. The
-#: static limit itself holds (a PD-held robot slides at 0.88-1.10 of it, measured
-#: 2026-10-25); walking reaches less. The official policy's top speed, commanded
-#: 0.8 m/s in still water on rock over beta 0.75-0.9 x friction 0.4-0.8, was
-#: 0.67 (0.56-0.75) of the limit forward and 0.63 (0.39-0.73) sideways, correlating
-#: 0.99 with it: walking is traction-bound, at about two thirds of the static
-#: figure. The reward is one-sided beyond the target, so a policy that walks
-#: faster is not held back by this figure.
-TRACTION_MARGIN = 0.65
+#: Multiplier on the static traction limit in the feasible-velocity target: 1, the
+#: physical limit, as an aspiration. 0.65 (what the official gait reaches) was
+#: tried and rejected before training: it made the official speed the ceiling of
+#: what is rewarded (review of run 2).
+TRACTION_MARGIN = 1.0
+#: Walking reaches about two thirds of the static limit: the official policy's top
+#: speed, commanded 0.8 m/s in still water on rock over beta 0.75-0.9 x friction
+#: 0.4-0.8, was 0.67 (0.56-0.75) of it forward and 0.63 (0.39-0.73) sideways,
+#: correlating 0.99 (measured 2026-10-25). Reachable commands are drawn inside it.
+WALK_FRACTION = 0.65
+#: Share of moving commands drawn inside the walkable disk (the rest: upstream's).
+REACHABLE_SHARE = 0.5
+#: Tracking kernel width as a share of the traction limit (upstream's 0.2 m/s land
+#: width is the upper clamp): a 0.07 m/s shortfall of a 0.24 m/s target cost 0.2/s.
+TRACK_STD_FRACTION = 0.4
+TRACK_STD_MIN = 0.05
+#: Weight of the progress term for out-of-reach commands (slope ~4/(m/s) at
+#: typical limits, against ~3/(m/s) the style terms pay for slowing; review of run 2).
+PROGRESS_WEIGHT = 1.5
 #: Upstream's foot-load thresholds, N, scaled per environment by its net weight.
 STANCE_LOAD_N = 5.0
 STANCE_LOAD_STAND_N = 3.0
@@ -89,10 +100,10 @@ def env_cfg(
     # `mirror_kind` tells upstream's symmetry augmentation how each term reflects.
     scalar, vec3 = {"mirror_kind": "scalar"}, {"mirror_kind": "vec3"}
     actor["buoyancy_ratio"] = ObservationTermCfg(func=water.buoyancy_ratio, params=scalar)
+    # Noise on the horizontal components only (inside the function): the manager's
+    # noise also hit the always-zero vertical one, a pure-noise input.
     actor["current_body"] = ObservationTermCfg(
-        func=water.current_body, params=vec3,
-        noise=UniformNoiseCfg(n_min=-CURRENT_NOISE, n_max=CURRENT_NOISE),
-    )
+        func=water.current_body, params={**vec3, "noise": CURRENT_NOISE, "group": "actor"})
     critic = cfg.observations["critic"].terms
     critic["buoyancy_ratio"] = ObservationTermCfg(func=water.buoyancy_ratio, params=scalar)
     critic["current_body"] = ObservationTermCfg(func=water.current_body, params=vec3)
@@ -112,7 +123,23 @@ def env_cfg(
     if set(track.params) != {"std", "command_name"}:
         raise RuntimeError(f"upstream's track_linear_velocity params changed: {track.params}")
     track.func = water.track_feasible_velocity
-    track.params["margin"] = TRACTION_MARGIN
+    track.params.update(margin=TRACTION_MARGIN, std_fraction=TRACK_STD_FRACTION,
+                        std_min=TRACK_STD_MIN)
+    cfg.rewards["water_progress"] = RewardTermCfg(
+        func=water.progress_beyond_reach, weight=PROGRESS_WEIGHT,
+        params={"command_name": "twist", "std": track.params["std"],
+                "std_fraction": TRACK_STD_FRACTION, "std_min": TRACK_STD_MIN})
+
+    # ── commands (training): a share drawn inside what this environment can walk.
+    # A replay keeps upstream's operator command, which the pad, the keyboard and
+    # `--command-script` drive. ──
+    twist = cfg.commands["twist"]
+    if not play:
+        if type(twist) is not water.UniformVelocityCommandCfg:
+            raise RuntimeError(f"upstream's twist command is a {type(twist).__name__} now")
+        cfg.commands["twist"] = water.OceanVelocityCommandCfg(
+            **{f.name: getattr(twist, f.name) for f in dataclasses.fields(twist)},
+            reachable_share=REACHABLE_SHARE, walk_fraction=WALK_FRACTION)
 
     cfg.metrics["feasible_tracking_error"] = MetricsTermCfg(
         func=water.feasible_tracking_error, params={"margin": TRACTION_MARGIN})

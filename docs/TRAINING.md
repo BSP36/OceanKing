@@ -158,6 +158,35 @@ The second run (iteration 75800, before this refinement, margin 1.0) already wal
 forward slower than the official policy (0.17 against 0.23 m/s, rock, beta 0.8, still water):
 the target it was chasing, the static limit, is a third above what walking can reach.
 
+**Run 3 (2026-10-26), from the review of runs 1–2.** Run 2 (margin 1.0, two-sided) kept the
+official top speed (0.25/0.27 m/s forward/sideways at a 0.8 command, against 0.27/0.26) but lost
+command gain (a 0.15 m/s command walked 0.078 against 0.103) and drifted more when standing (0.030
+against 0.003 m/s). Five reviewers traced it to the reward and the commands, not to too little
+training:
+
+- most commands were out of reach, so the gradient mostly paid for "as fast as possible", and the
+  style terms (gait, smoothness, energy) pay for walking slower: the cheapest compromise was a
+  uniformly slower gait;
+- a margin of 0.65 would have made the official speed the ceiling of what is rewarded, so the
+  margin stays **1.0** (the physical limit, an aspiration), with the one-sided form above;
+- the tracking kernel (upstream's 0.2 m/s land width) is wide against 0.2–0.5 m/s limits: it now
+  scales as `std = 0.4 v_lim`, clamped to [0.05, upstream's std] (`TRACK_STD_FRACTION`);
+- a **progress term** (`water_progress`, weight 1.5) pays, for out-of-reach commands only, the
+  speed along the command relative to the water as a share of the target, so walking faster still
+  pays where the tracking kernel saturates.
+
+### 6.4 PPO for fine-tuning (run 3)
+
+| Setting | Upstream | ocean.walk | Why |
+|---|---|---|---|
+| `desired_kl` | 0.01 | 0.005 | at 0.01 the actor random-walked ~20% from the official weights |
+| action std | learned | fixed at the official values | it rose 0.20 → 0.26, a tax through `action_rate_l2` |
+| entropy coefficient | 0.01 | 0 | moot with a fixed std |
+| optimiser | restored | fresh Adam, lr 1e-4 | the widened checkpoint's moments gave the new columns several times the normal step |
+
+The actor's current observation carries flow-sensor noise on its horizontal components only (the
+vertical one is always zero; noise there was a pure-noise input).
+
 ### 6.2 Foot loads follow the net weight
 
 | Term | Upstream | Underwater |
@@ -184,7 +213,10 @@ commanded to stand.
 
 ## 7. Commands
 
-Upstream's ranges (up to 0.8 m/s, 4 rad/s), unchanged: with the feasible target an
+From run 3, **half of the moving commands** are redrawn uniformly inside the disk the environment
+can walk (`WALK_FRACTION = 0.65` of its traction limit, what the official gait reaches;
+`oceanking.water.OceanVelocityCommand`), so small and reachable commands, where command gain is
+learned, are a real share of training. The rest keep upstream's ranges: (up to 0.8 m/s, 4 rad/s), unchanged: with the feasible target an
 out-of-reach command means "as fast as possible that way", which is what a command to a crab in
 a current should mean. A share of episodes (upstream's standing fraction) commands zero, the
 station-keeping test. After a resume the first command of each environment is still drawn from the
@@ -199,7 +231,25 @@ and refuse a mismatch unless overridden. (Missing today: PHYSICS.md §13.)
 
 ## 9. Evaluation
 
-Frozen before comparing checkpoints. MuJoCo Warp (patched to match native MuJoCo, PHYSICS.md §6.3),
+**Fixed protocol from run 3** (`oceanking.tools.evaluate`, frozen before run 3 finished): native
+MuJoCo on CPU, one environment from the nominal start without observation noise, the water pinned;
+the official policy through its expanded checkpoint. Seven walking conditions (rock beta 0.8
+friction 0.5 still, head 0.1, head 0.2, cross 0.2; rock beta 0.75 friction 0.8; rock beta 0.9
+friction 0.4; sand beta 0.8), each walking forward 0.15/0.3/0.8, sideways 0.15/0.3/0.8 and backward
+0.3 m/s for 4 s; three standing runs in currents. A candidate passes only if all hold against the
+official policy in the same runs:
+
+| | Criterion |
+|---|---|
+| A | small commands (0.15 forward and sideways, reference water) ≥ 0.95x |
+| B | geometric mean of the speed ratio over all walking segments ≥ 1.0 |
+| C | forward speed into the two head currents ≥ 1.05x |
+| D | drift when standing ≤ official + 0.005 m/s in every standing run |
+| E | no fall (body up-axis stays above 0.5) |
+
+The broader grid below remains the plan for the report.
+
+Original plan, frozen before comparing checkpoints. MuJoCo Warp (patched to match native MuJoCo, PHYSICS.md §6.3),
 seeded, the same initial states and command sequences for every policy.
 
 | Axis | Values |

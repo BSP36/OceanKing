@@ -207,18 +207,24 @@ def buoyancy_ratio(env: Any, mirror_kind: str = "scalar") -> torch.Tensor:
     return ocean_state(env).beta.unsqueeze(1)
 
 
-def current_body(env: Any, mirror_kind: str = "vec3") -> torch.Tensor:
+def current_body(env: Any, mirror_kind: str = "vec3", noise: float = 0.0,
+                 group: str = "actor") -> torch.Tensor:
     """The water's velocity in the robot's heading (yaw) frame: (forward, left, up).
 
     Three components, the vertical always 0 here: upstream's mirror has a 3-vector
-    kind (negate y) and no 2-vector one."""
+    kind (negate y) and no 2-vector one. `noise` (uniform, +/-) goes on the two
+    horizontal components only, and only while `group`'s corruption is on: noise
+    on the always-zero vertical one was a pure-noise input (review of run 2)."""
     q = env.scene["robot"].data.root_link_quat_w  # w, x, y, z
     yaw = torch.atan2(2.0 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]),
                       1.0 - 2.0 * (q[:, 2] ** 2 + q[:, 3] ** 2))
     c = ocean_state(env).current_w
     cos, sin = torch.cos(yaw), torch.sin(yaw)
-    return torch.stack([cos * c[:, 0] + sin * c[:, 1], -sin * c[:, 0] + cos * c[:, 1], c[:, 2]],
-                       dim=1)
+    out = torch.stack([cos * c[:, 0] + sin * c[:, 1], -sin * c[:, 0] + cos * c[:, 1], c[:, 2]],
+                      dim=1)
+    if noise > 0.0 and getattr(env.cfg.observations.get(group), "enable_corruption", False):
+        out[:, :2] += (2.0 * torch.rand_like(out[:, :2]) - 1.0) * noise
+    return out
 
 
 def ground_friction(env: Any, mirror_kind: str = "scalar") -> torch.Tensor:
@@ -294,16 +300,51 @@ def feasible_error_sq(command: torch.Tensor, actual: torch.Tensor, centre: torch
     return torch.where(inside, within, outside)
 
 
-def track_feasible_velocity(env: Any, std: float, command_name: str,
-                            margin: float = 1.0) -> torch.Tensor:
+def tracking_std(env: Any, std: float, std_fraction: float | None, std_min: float) -> torch.Tensor:
+    """The tracking kernel's width, [N]: upstream's land `std` (0.2 m/s), or, with
+    `std_fraction`, that fraction of each environment's traction limit (clamped to
+    [std_min, std]) -- so a shortfall of a given share of what is possible costs the
+    same everywhere, instead of almost nothing where little is possible."""
+    if std_fraction is None:
+        return torch.full((env.num_envs,), float(std), device=env.device)
+    return (std_fraction * traction_limit(env)).clamp(std_min, std)
+
+
+def track_feasible_velocity(env: Any, std: float, command_name: str, margin: float = 1.0,
+                            std_fraction: float | None = None,
+                            std_min: float = 0.05) -> torch.Tensor:
     """Upstream's `track_linear_velocity`, scored against what the physics allows
     (`feasible_error_sq`): full marks for the best possible (docs/TRAINING.md
-    section 6). Same form and the same `std`, which upstream's curriculum sets."""
+    section 6). `std` is upstream's, which its curriculum sets; see `tracking_std`."""
     cmd = env.command_manager.get_command(command_name)[:, :2]
     actual = env.scene["robot"].data.root_link_lin_vel_b
     error = feasible_error_sq(cmd, actual[:, :2], current_body(env)[:, :2],
                               traction_limit(env, margin))
-    return torch.exp(-(error + actual[:, 2].square()) / std**2)
+    width = tracking_std(env, std, std_fraction, std_min)
+    return torch.exp(-(error + actual[:, 2].square()) / width.square())
+
+
+def progress_beyond_reach(env: Any, command_name: str = "twist", std: float = 0.2,
+                          std_fraction: float | None = None, std_min: float = 0.05) -> torch.Tensor:
+    """For a command outside the reachable disk: the speed through the water towards
+    it, as a share of the traction limit (clipped to [0, 1]), times staying on its
+    line. Zero for reachable commands. A slope that does not saturate below the
+    limit, so walking faster towards an out-of-reach command keeps paying (review
+    of run 2: the exp kernel alone lost to the style terms)."""
+    cmd = env.command_manager.get_command(command_name)[:, :2]
+    actual = env.scene["robot"].data.root_link_lin_vel_b[:, :2]
+    centre = current_body(env)[:, :2]
+    limit = traction_limit(env)
+    offset = cmd - centre
+    dist = torch.linalg.norm(offset, dim=1)
+    outside = dist > limit
+    u = offset / dist.clamp_min(1e-9).unsqueeze(1)
+    rel = actual - centre
+    along = (rel * u).sum(dim=1)
+    across = (rel - along.unsqueeze(1) * u).square().sum(dim=1)
+    width = tracking_std(env, std, std_fraction, std_min)
+    share = (along / limit.clamp_min(1e-6)).clamp(0.0, 1.0)
+    return outside.float() * share * torch.exp(-across / width.square())
 
 
 def feasible_tracking_error(env: Any, command_name: str = "twist",
@@ -347,3 +388,62 @@ __all__ = [
     "BuoyancyStartup", "OceanState", "WaterClock", "WaterReset", "buoyancy_ratio", "current_body", "ground_friction", "ocean_state", "scaled_load",
     "standing_drift", "standing_share",
 ]
+
+
+# ── commands ────────────────────────────────────────────────────────────────
+
+from dataclasses import dataclass as _dataclass  # noqa: E402
+
+from mjlab.tasks.velocity.mdp.velocity_command import (  # noqa: E402
+    UniformVelocityCommand,
+    UniformVelocityCommandCfg,
+)
+
+
+class OceanVelocityCommand(UniformVelocityCommand):
+    """Upstream's velocity command, with a share of moving commands drawn inside
+    what this environment can walk.
+
+    Upstream draws each axis uniformly in +/-0.8 m/s; under water that put about
+    six moving commands in seven out of reach, the size of a command stopped
+    carrying any reward signal, and the policy's command gain shrank by a third,
+    even for 0.15 m/s commands that are reachable everywhere (review of run 2).
+    Here a share `reachable_share` of the commands upstream did not make standing
+    is replaced by a point drawn uniformly in the disk the robot can walk: centred
+    on the current (heading frame), radius `walk_fraction` of the traction limit
+    (walking reaches about two thirds of the static limit, docs/TRAINING.md
+    section 1). The rest keep upstream's draw, mostly out of reach: "as fast as
+    possible that way"."""
+
+    cfg: "OceanVelocityCommandCfg"
+
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
+        super()._resample_command(env_ids)
+        env = self._env
+        state = getattr(env, "ocean", None)
+        if state is None or len(env_ids) == 0:
+            return
+        limit = traction_limit(env)[env_ids]
+        if not torch.isfinite(limit).all():
+            return  # water not drawn yet (first reset): keep upstream's draw
+        moving = ~self.is_standing_env[env_ids]
+        pick = moving & (torch.rand(len(env_ids), device=self.device) < self.cfg.reachable_share)
+        ids = env_ids[pick]
+        if len(ids) == 0:
+            return
+        radius = self.cfg.walk_fraction * limit[pick]
+        r = radius * torch.sqrt(torch.rand(len(ids), device=self.device))
+        a = 2.0 * math.pi * torch.rand(len(ids), device=self.device)
+        centre = current_body(env)[ids, :2]
+        self.vel_command_b[ids, 0] = centre[:, 0] + r * torch.cos(a)
+        self.vel_command_b[ids, 1] = centre[:, 1] + r * torch.sin(a)
+        self.vel_command_w[ids] = self.vel_command_b[ids]
+
+
+@_dataclass(kw_only=True)
+class OceanVelocityCommandCfg(UniformVelocityCommandCfg):
+    reachable_share: float = 0.5
+    walk_fraction: float = 0.65
+
+    def build(self, env: Any) -> OceanVelocityCommand:
+        return OceanVelocityCommand(self, env)

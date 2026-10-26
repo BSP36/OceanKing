@@ -10,8 +10,9 @@ reads, and extends everything sized by the input with it:
 - the observation normalisers, with the new columns' mean and variance set from
   the training ranges rather than to (0, 1): the normaliser's count is in the
   millions, so whatever it starts at for a new column is where it stays;
-- Adam's moments for the first layer (zeros for the new columns); the step
-  count, learning rate and every other tensor are kept;
+- Adam's moments for the first layer (zeros for the new columns), kept so the
+  file is a complete checkpoint; it is marked `oceanking_fresh_optimizer` and
+  ocean.walk's runner does not restore them (a fresh Adam);
 - `iter` and `infos` (curricula and the environment's step counter), so a
   resumed run starts at the official command curriculum's top rung.
 
@@ -45,8 +46,10 @@ def new_columns() -> dict[str, list[tuple[str, float, float]]]:
     horizontal = c**2 / 6
     noise = walk.CURRENT_NOISE**2 / 3  # uniform on [-n, n]
     flo, fhi = walk.FRICTION_RANGE
+    # The vertical component is always 0 and carries no noise (noise goes on the
+    # horizontal ones only); a small variance keeps the normaliser finite.
     actor = [beta, ("current_forward", 0.0, horizontal + noise),
-             ("current_left", 0.0, horizontal + noise), ("current_up", 0.0, noise)]
+             ("current_left", 0.0, horizontal + noise), ("current_up", 0.0, 1e-4)]
     critic = [beta, ("current_forward", 0.0, horizontal), ("current_left", 0.0, horizontal),
               # Never moves in training; a small variance keeps the normaliser finite.
               ("current_up", 0.0, 1e-4),
@@ -77,6 +80,10 @@ def expand(src: Path, dst: Path) -> dict:
             for old, new in widths.values():
                 if t.dim() == 2 and t.shape == (512, old):
                     state[key] = torch.cat([t, t.new_zeros(512, new - old)], dim=1)
+    # The Adam moments above are widened to fit, but they describe the land task and
+    # gave the new columns several times the normal step at first (review of run
+    # 2): ocean.walk's runner starts a fresh optimiser for a checkpoint marked so.
+    ck["oceanking_fresh_optimizer"] = True
     dst.mkdir(parents=True, exist_ok=True)
     out = dst / src.name
     torch.save(ck, out)

@@ -220,7 +220,10 @@ def test_the_walk_task_tracks_the_feasible_velocity():
     cfg = tasks.load_env_cfg("ocean.walk", play=False, task_args={})
     track = cfg.rewards["track_linear_velocity"]
     assert track.func is water.track_feasible_velocity
-    assert set(track.params) == {"std", "command_name", "margin"}  # std: upstream's curriculum
+    # std is upstream's curriculum's; the rest are ocean.walk's.
+    assert set(track.params) == {"std", "command_name", "margin", "std_fraction", "std_min"}
+    assert cfg.rewards["water_progress"].func is water.progress_beyond_reach
+    assert isinstance(cfg.commands["twist"], water.OceanVelocityCommandCfg)
 
 
 def test_trajectory_paths_keep_their_dots(tmp_path):
@@ -266,3 +269,86 @@ def test_in_a_head_current_the_disk_moves_downstream():
     assert feasible_error_sq(fwd, torch.tensor([[0.0, 0.0]]), centre, r).item() == pytest.approx(0.01)
     stand = torch.zeros(1, 2)
     assert feasible_error_sq(stand, torch.tensor([[-0.05, 0.0]]), centre, r).item() == pytest.approx(0.0025)
+
+
+def test_progress_pays_for_speed_towards_an_out_of_reach_command():
+    """Below the limit the progress term keeps rising with speed (no saturation),
+    and it is zero for reachable commands."""
+    from types import SimpleNamespace
+
+    from oceanking import water
+
+    class Env(SimpleNamespace):
+        pass
+
+    def env_with(cmd, vel):
+        robot = SimpleNamespace(data=SimpleNamespace(
+            root_link_lin_vel_b=torch.tensor([[vel[0], vel[1], 0.0]]),
+            root_link_quat_w=torch.tensor([[1.0, 0.0, 0.0, 0.0]])))
+        e = Env(num_envs=1, device="cpu", scene={"robot": robot},
+                command_manager=SimpleNamespace(get_command=lambda name: torch.tensor([cmd])))
+        e.ocean = water.OceanState(beta=torch.tensor([0.8]), current_w=torch.zeros(1, 3),
+                                   friction=torch.tensor([0.5]), load_scale=torch.ones(1),
+                                   net_weight=torch.tensor([10.8]))
+        return e
+
+    far = [0.8, 0.0, 0.0]
+    p = [water.progress_beyond_reach(env_with(far, (v, 0.0))).item() for v in (0.0, 0.1, 0.2, 0.3)]
+    assert p[0] == 0.0 and p[0] < p[1] < p[2] < p[3]
+    assert water.progress_beyond_reach(env_with([0.1, 0.0, 0.0], (0.1, 0.0))).item() == 0.0
+
+
+def test_reachable_commands_are_drawn_inside_the_walkable_disk(env):
+    """A share of moving commands is redrawn inside walk_fraction x the traction
+    limit around the current; control: upstream's draw reaches far outside it."""
+    from oceanking import water
+
+    term = env.command_manager.get_term("twist")
+    assert isinstance(term, water.OceanVelocityCommand)
+    # The top curriculum rung's ranges, as a resumed run has them (this env starts
+    # at rung 0, where upstream's own draw mostly lands inside the disk anyway).
+    ranges = term.cfg.ranges
+    saved = (ranges.lin_vel_x, ranges.lin_vel_y)
+    ranges.lin_vel_x = ranges.lin_vel_y = (-0.8, 0.8)
+    ids = torch.arange(env.num_envs, device=env.device)
+    inside, outside = 0, 0
+    for _ in range(40):
+        term._resample_command(ids)
+        cmd = term.vel_command_b[:, :2]
+        centre = water.current_body(env)[:, :2]
+        d = torch.linalg.norm(cmd - centre, dim=1)
+        r = term.cfg.walk_fraction * water.traction_limit(env)
+        moving = ~term.is_standing_env
+        inside += int(((d <= r + 1e-5) & moving).sum())
+        outside += int(((d > r + 1e-5) & moving).sum())
+    ranges.lin_vel_x, ranges.lin_vel_y = saved
+    share = inside / max(inside + outside, 1)
+    # Half redrawn inside, plus the few upstream draws that land inside (~5%).
+    assert 0.35 < share < 0.75
+    assert outside > 0
+
+
+def test_the_current_reading_has_noise_on_the_horizontal_only(env):
+    from oceanking import water
+
+    env.cfg.observations["actor"].enable_corruption = True
+    try:
+        noisy = water.current_body(env, noise=0.03)
+    finally:
+        env.cfg.observations["actor"].enable_corruption = False
+    clean = water.current_body(env)
+    assert torch.equal(noisy[:, 2], clean[:, 2])
+    assert (noisy[:, :2] - clean[:, :2]).abs().max() <= 0.03 + 1e-6
+    torch.testing.assert_close(water.current_body(env, noise=0.03), clean)  # corruption off
+
+
+def test_the_expanded_checkpoint_asks_for_a_fresh_optimizer(tmp_path):
+    from oceanking.tools.expand_checkpoint import OFFICIAL, expand
+    from tasks.ocean.walk.rl_cfg import FRESH_OPTIMIZER_KEY, agent_cfg
+
+    expand(OFFICIAL, tmp_path)
+    assert torch.load(tmp_path / OFFICIAL.name, map_location="cpu",
+                      weights_only=False)[FRESH_OPTIMIZER_KEY] is True
+    cfg = agent_cfg()
+    assert cfg.actor.distribution_cfg["learn_std"] is False
+    assert cfg.algorithm.desired_kl == 0.005 and cfg.algorithm.learning_rate == 1e-4
