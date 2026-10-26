@@ -130,3 +130,19 @@ def test_flight_progress_pays_speed_towards_the_target_in_flight_only(env):
     assert torch.allclose(got, torch.full((N,), 0.4), atol=0.02)
     cmd.strength[:] = 0.0
     assert (mdp.flight_progress(env) == 0).all()
+
+
+def test_contact_threshold_follows_the_net_weight_and_ignores_the_rising_push(env):
+    """Runs 1-3: with upstream's 1 N a robot at beta 0.9+ read as airborne while
+    standing, and a touch during the push latched as the landing."""
+    from tasks.ocean.jump import mdp
+    from oceanking import water
+
+    cmd = env.command_manager.get_term("jump")
+    cmd.in_flight[:] = False
+    cmd._update_command()
+    thr = cmd.cfg.force_threshold.flatten()
+    scale = water.ocean_state(env).load_scale
+    assert torch.allclose(thr, (1.0 * scale).clamp_min(mdp.MIN_CONTACT_N))
+    assert (thr < 1.0).all()
+    assert cmd.cfg.min_rise == pytest.approx(0.04)

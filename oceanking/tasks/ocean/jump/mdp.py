@@ -16,7 +16,14 @@ from typing import Any
 
 import torch
 
+from oceanking import water
+
 from ...jumper.ref_free_jump.mdp.commands import RefFreeJumpCommand, RefFreeJumpCommandCfg
+
+#: Floor of the scaled contact threshold, N (a foot at beta 0.98 stands on ~0.15 N).
+MIN_CONTACT_N = 0.02
+#: Body vertical speed, m/s, above which a flight's foot contact is still the push.
+RISING_SPEED = 0.05
 
 
 @dataclass(kw_only=True)
@@ -55,6 +62,7 @@ class OceanJumpCommand(RefFreeJumpCommand):
         self.metrics["landing_error"] = self._landing_error
         self.metrics["landing_distance"] = self._landing_distance
         self.metrics["strength"] = self.strength
+        self._base_threshold = float(cfg.force_threshold)
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         super()._resample_command(env_ids)
@@ -76,6 +84,22 @@ class OceanJumpCommand(RefFreeJumpCommand):
         self._was_landed[env_ids] = False
 
     def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
+        # A foot is "in contact" above upstream's 1 N on land, scaled per
+        # environment by its net weight: at beta 0.9 a standing foot carries 0.8 N,
+        # at 0.98 0.15 N, and with the land threshold the robot read as airborne
+        # while standing -- every jump taken off at the spawn, none ever landed
+        # (runs 1-3).
+        scale = water.ocean_state(self._env).load_scale
+        threshold = (self._base_threshold * scale).clamp_min(MIN_CONTACT_N)
+        # A touch while the body still rises is part of the push, not a landing:
+        # under water the official jump pushes twice (the middle legs touch again
+        # 0.3 s in, body rising), and upstream's logic latched that as the landing
+        # at the take-off point and the real flight as a second jump, clawing its
+        # height back (probe of 2026-10-26).
+        rising = self.robot.data.root_link_lin_vel_w[:, 2] > RISING_SPEED
+        threshold = torch.where(self.in_flight & rising, torch.full_like(threshold, math.inf),
+                                threshold)
+        self.cfg.force_threshold = threshold.unsqueeze(1)
         super()._update_command(env_ids)
         if env_ids is not None:
             return

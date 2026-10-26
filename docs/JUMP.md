@@ -70,7 +70,7 @@ ran out, which under water is mid-flight, and `back_home` would end the episode 
 
 ## 4. Reward
 
-Upstream's terms and weights, with these changes (as of run 3):
+Upstream's terms and weights, with these changes (as of run 4):
 
 | Term | Upstream | ocean.jump |
 |---|---|---|
@@ -92,6 +92,27 @@ and jumped lower (rise 0.12 m at beta 0.8, the official 0.16 m): a missed full-s
 beta alone. The landing terms are paid seconds after the push and the landing scatter is small, so
 the target barely moved the return. Run 3 adds `flight_progress`, a dense signal during the flight
 itself.
+
+**Run 3 (stopped at 6450) and the bug behind runs 1–3.** Every episode of run 3 ran the full 8 s
+and the jumps got lower. A probe of the command's state (`scratch/jump/probe/probe.py`) found two
+faults in how upstream's jump detection reads the water, not in the rewards:
+
+- **contacts against the land threshold**: a foot is "in contact" above 1 N. A standing robot
+  puts 0.8 N on a foot at beta 0.9 and 0.15 N at 0.98, so above about beta 0.85 (more than half the
+  training range) the robot read as airborne while standing: the jump "took off" at the spawn and
+  never landed;
+- **the two-stage push**: under water the official push starts with a ~1 cm hop, and the middle legs
+  touch down again 0.3 s in while the body rises. Upstream's logic (1 cm minimum rise) latched that
+  touch as the landing, at the take-off point, and the real flight as a second jump whose height it
+  clawed back.
+
+So the landing terms were scored at the take-off point, and in most environments never. Fixed
+(`OceanJumpCommand._update_command`): the contact threshold is upstream's 1 N times the
+environment's net weight over the land weight (floor 0.02 N), contacts while the body still rises
+faster than 0.05 m/s are part of the push, and a jump must lift the lowest point 0.04 m
+(`MIN_RISE`). Probed after the fix: beta 0.8 lands at 1.35 s, beta 0.9 at 1.85 s and the episode
+then ends at HOME, beta 0.98 flies its whole 4 s arc. The body-on-ground contact
+(`illegal_contact`) is judged against the net weight too.
 
 ## 5. Training
 

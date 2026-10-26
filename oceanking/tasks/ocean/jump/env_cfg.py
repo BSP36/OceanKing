@@ -43,6 +43,10 @@ APEX_SIGMA = LANDING_WIDE_SIGMA
 FLIGHT_PROGRESS_WEIGHT = 10.0
 #: Body travel before take-off that the drift term does not charge, m.
 DRIFT_DEADBAND = 0.05
+#: A flight must lift the lowest point this far, m, to be the episode's jump
+#: (upstream 0.01): under water the official push starts with a ~1 cm hop whose
+#: touch-down latched as the landing (probe of 2026-10-26).
+MIN_RISE = 0.04
 #: Upstream's 2.5 s episode is shorter than a flight at high beta (up to ~6 s).
 EPISODE_S = 8.0
 
@@ -78,6 +82,7 @@ def env_cfg(
     # ── the command: upstream's jump, aimed ──
     old = cfg.commands["jump"]
     fields = {k: getattr(old, k) for k in old.__dataclass_fields__ if k != "class_type"}
+    fields["min_rise"] = MIN_RISE
     cfg.commands["jump"] = mdp.OceanJumpCommandCfg(
         **fields, reach=REACH, upright_share=UPRIGHT_SHARE,
         target=tuple(jump) if jump is not None else None)
@@ -111,6 +116,10 @@ def env_cfg(
     cfg.rewards["landing_near"] = RewardTermCfg(
         func=mdp.landing_target, weight=LANDING_WIDE_WEIGHT,
         params={"sigma": LANDING_WIDE_SIGMA})
+    # Body-on-ground contact, like the feet's, is judged against the net weight.
+    illegal = cfg.rewards["illegal_contact"]
+    illegal.func = water.scaled_load(illegal.func, illegal.params["force_threshold"])
+    illegal.params = {k: v for k, v in illegal.params.items() if k != "force_threshold"}
     # The in-flight height pays every airborne step: at beta 0.98 a flight lasts
     # seconds and would pay more than any landing (docs/JUMP.md section 4).
     if "flight_height_weight" in cfg.curriculum:
