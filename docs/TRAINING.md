@@ -217,6 +217,21 @@ lowering `tripod_gait` (it rewards clean contacts, not wrong in itself). Run 4 s
 official checkpoint, and its checkpoints are evaluated every 100 iterations, since the last one need
 not be the best.
 
+**Run 4 result (2026-10-26): passes.** Every checkpoint from iteration 75100 (300 iterations) on
+passed section 9's criteria, except four by a standing-drift excess of 0.006–0.007 m/s against the
+0.005 threshold. Selected: **iteration 75600**, stored in
+[`oceanking/tasks/ocean/walk/out/run4/`](../oceanking/tasks/ocean/walk/out/run4) with its
+evaluation (small commands 1.18x, all segments 1.30x, into head currents 1.53x the official
+speed; forward 0.15 m/s walks 0.161 m/s, the official 0.103).
+
+**Found by looking past the criteria:** later checkpoints overshoot small commands (forward 0.15
+m/s walked 0.19 at 76000, 0.23 at 76299) and lose sideways speed in a cross current. The criteria
+only ask for "at least the official", so they score overshoot as improvement; selection therefore
+also used the mean relative error against reachable commands (0.19 at 75600, 0.31 official, 0.30
+at 76299). A likely cause: the progress term pays `min(along / command, 1)`, and since the speed
+oscillates through a stride, its average keeps rising while the mean speed is above the command; a
+term peaking at the command (or a tracking-error criterion in the evaluation) would remove it.
+
 ### 6.2 Foot loads follow the net weight
 
 | Term | Upstream | Underwater |
