@@ -79,7 +79,7 @@ Upstream's terms and weights, with these changes (as of run 4):
 | `apex_height` (+4) | rise of the lowest point / 0.1 m, after landing | the same **times the wide landing accuracy**: height counts on a jump that lands roughly where aimed |
 | `flight_progress` (new, +10) | | in the episode's own flight, aimed episodes only: the speed towards the target (clipped ±1 m/s), i.e. the rate the distance to it shrinks; summed over a flight, the distance gained (bounded by the target's; passing it turns the sign). Nothing on the ground |
 | `flight_height` (+2) | rise during flight | **0**: it pays every airborne step, and at beta 0.98 a flight lasts seconds, which would pay more than any landing |
-| `horizontal_drift` (−1) | distance from the start | `anchored_drift`: beyond 0.05 m from the take-off point before the jump, nothing in flight, from the landing point after it (no shuffling towards the target, no sliding after landing) |
+| `horizontal_drift` (−1) | distance from the start | `anchored_drift`: beyond 0.05 m from the take-off point before the jump, nothing in flight, beyond 0.05 m from the landing point after it (no shuffling towards the target, no sliding after landing) |
 
 **Run 1 (stopped at iteration 6650 of 9000)** had only the narrow kernel, scaled the apex by it,
 and charged all travel before take-off. At its iteration 6500 the policy landed within 0.06 m of
@@ -120,6 +120,15 @@ Fine-tuned from the official checkpoint, iteration 5999, widened with zero colum
 (`expand_checkpoint --task jump`): it acts exactly as the official policy, whatever the new columns
 read. At that iteration upstream's training aid (the recording fed forward, and the prior on the
 joints) is already gone, and the environment's step counter is restored with it.
+
+**Run 4 (stopped at 7050)**, with detection fixed, began to aim at its iteration 6500 (forward
+targets landed 0.10–0.17 m forward, straight-up ones near the take-off point) but then lowered its
+jumps (rise 0.15 → 0.09 m at 7000), the erosion every run showed. The cause is the discount:
+upstream's horizon is ~2 s (0.99 and 0.95 at 50 Hz, fourth roots at 200 Hz), set for a land jump
+whose push and landing are 0.5 s apart. Under water the flight lasts 1–5 s, so the landing's reward
+reached the push discounted to ~0.13 while the push's costs were immediate. From run 5 the
+horizon is ~6 s (twelfth roots), and the drift after landing has the same 0.05 m deadband (run 4
+paid −1.1 per episode for the light robot settling, as much as the aiming terms paid).
 
 PPO as ocean.walk's fine-tuning (docs/TRAINING.md section 6.4): fresh Adam at lr 1e-4, the action
 std fixed at the official values, no entropy bonus; `desired_kl` stays at upstream's 0.01, since an

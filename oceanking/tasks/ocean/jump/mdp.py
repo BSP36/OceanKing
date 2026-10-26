@@ -207,14 +207,16 @@ def anchored_drift(env: Any, command_name: str = "jump", scale: float = 0.10,
                    deadband: float = 0.0) -> torch.Tensor:
     """Upstream's `horizontal_drift` with a moving anchor: the take-off point
     until the jump, nothing in flight, the landing point after it. So the robot
-    neither shuffles towards the target nor slides on after landing. Before the
-    jump only the distance beyond `deadband` counts: an aimed push leans the body
-    over the feet (run 1: the full penalty there held every jump vertical)."""
+    neither shuffles towards the target nor slides on after landing. Only the
+    distance beyond `deadband` counts: an aimed push leans the body over the
+    feet (run 1: the full penalty there held every jump vertical), and a light
+    robot settles a few centimetres after landing (run 4: -1.1 per episode,
+    as much as the aiming terms paid)."""
     cmd = env.command_manager.get_term(command_name)
     p = cmd.position()
     anchor = torch.where(cmd.landed.unsqueeze(1), cmd.landing, torch.zeros_like(p))
     d = (p - anchor).norm(dim=1)
-    d = torch.where(cmd.landed, d, (d - deadband).clamp(min=0.0))
+    d = (d - deadband).clamp(min=0.0)
     return d.square() / scale**2 * (~cmd.in_flight).float()
 
 

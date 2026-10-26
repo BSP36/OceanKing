@@ -92,6 +92,8 @@ def test_landing_reward_and_drift_anchor(env):
     cmd.landing[:] = cmd.target
     assert torch.allclose(mdp.landing_target(env, sigma=0.08), torch.ones(N))
     assert torch.allclose(mdp.anchored_drift(env, scale=0.1), torch.full((N,), 1.0), atol=1e-4)
+    assert torch.allclose(mdp.anchored_drift(env, scale=0.1, deadband=0.05),
+                          torch.full((N,), 0.25), atol=1e-4)
     # One sigma off: exp(-1). In flight: no drift.
     cmd.landing[:] = cmd.target + torch.tensor([0.0, 0.08])
     assert torch.allclose(mdp.landing_target(env, sigma=0.08), torch.full((N,), math.exp(-1)))
