@@ -1,6 +1,10 @@
 # OceanKing jump specification (ocean.jump)
 
-**Status: implemented 2026-10-26, first training run.** Decisions taken with the user: the
+**Status (2026-10-26): straight-up jump selected** -- run 5, iteration 11000, in
+[`oceanking/tasks/ocean/jump/out/run5/`](../oceanking/tasks/ocean/jump/out/run5): as high as the
+official jump, lands within 0.02 m of its take-off point, 1-4 s of airtime over beta 0.8-0.98. The
+aimed jump was not learnt and is shelved (section 4: plausibly 0.1-0.15 m of aim at most); travel
+through the water is to come from the current instead. Decisions taken with the user: the
 command is a **direction and a strength**; beta up to **0.98**; the crown tank stays fixed during
 a jump (tank control later, as its own policy).
 
