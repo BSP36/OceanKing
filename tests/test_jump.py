@@ -108,3 +108,25 @@ def test_drift_before_take_off_has_a_deadband(env):
     d = cmd.position().norm(dim=1)
     expect = (d - 0.05).clamp(min=0.0).square() / 0.01
     assert torch.allclose(mdp.anchored_drift(env, scale=0.1, deadband=0.05), expect)
+
+
+def test_flight_progress_pays_speed_towards_the_target_in_flight_only(env):
+    from tasks.ocean.jump import mdp
+
+    cmd = env.command_manager.get_term("jump")
+    p = cmd.position()
+    cmd.target[:] = p + torch.tensor([0.2, 0.0])
+    cmd.strength[:] = 0.7
+    robot = env.scene["robot"]
+    v = torch.zeros(N, 6)
+    v[:, 0] = 0.4
+    robot.write_root_link_velocity_to_sim(v)
+    env.sim.forward()
+    env.scene.update(0.0)
+    cmd.in_flight[:] = False
+    assert (mdp.flight_progress(env) == 0).all()
+    cmd.in_flight[:] = True
+    got = mdp.flight_progress(env)
+    assert torch.allclose(got, torch.full((N,), 0.4), atol=0.02)
+    cmd.strength[:] = 0.0
+    assert (mdp.flight_progress(env) == 0).all()

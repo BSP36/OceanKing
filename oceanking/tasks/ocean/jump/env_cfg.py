@@ -37,6 +37,10 @@ LANDING_WIDE_WEIGHT = 4.0
 #: The apex term (upstream's 4) is scaled by the wide accuracy: run 1, scaled by
 #: the narrow one, lowered its jumps while it could not yet aim.
 APEX_SIGMA = LANDING_WIDE_SIGMA
+#: Weight of the in-flight progress towards the target (per m/s; summed over a
+#: flight, per metre gained): a full-strength jump earns about 3, as much as the
+#: landing terms pay over an episode (run 2's Episode_Reward/landing_near: 1.2).
+FLIGHT_PROGRESS_WEIGHT = 10.0
 #: Body travel before take-off that the drift term does not charge, m.
 DRIFT_DEADBAND = 0.05
 #: Upstream's 2.5 s episode is shorter than a flight at high beta (up to ~6 s).
@@ -102,6 +106,8 @@ def env_cfg(
     apex.params = {**apex.params, "sigma": APEX_SIGMA}
     cfg.rewards["landing_target"] = RewardTermCfg(
         func=mdp.landing_target, weight=LANDING_WEIGHT, params={"sigma": LANDING_SIGMA})
+    cfg.rewards["flight_progress"] = RewardTermCfg(
+        func=mdp.flight_progress, weight=FLIGHT_PROGRESS_WEIGHT)
     cfg.rewards["landing_near"] = RewardTermCfg(
         func=mdp.landing_target, weight=LANDING_WIDE_WEIGHT,
         params={"sigma": LANDING_WIDE_SIGMA})

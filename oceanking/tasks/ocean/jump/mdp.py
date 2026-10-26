@@ -161,6 +161,24 @@ def apex_on_target(env: Any, command_name: str = "jump", scale: float = 0.10,
     return apex_height(env, command_name, scale) * landing_accuracy(cmd, sigma)
 
 
+def flight_progress(env: Any, command_name: str = "jump", max_speed: float = 1.0) -> torch.Tensor:
+    """In the episode's own flight, the speed towards the target (m/s, clipped to
+    +/- `max_speed`): the rate the distance to it shrinks. Summed over a flight it
+    is the distance gained towards the target, so it is bounded by the target's
+    distance (passing it turns the sign), and it pays nothing on the ground, where
+    shuffling would earn it. A dense signal for aiming: run 2's landing kernels,
+    paid seconds after the push, left the target input unused."""
+    cmd = env.command_manager.get_term(command_name)
+    offset = cmd.target - cmd.position()
+    dist = offset.norm(dim=1)
+    u = offset / dist.clamp_min(1e-6).unsqueeze(1)
+    v = env.scene["robot"].data.root_link_lin_vel_w[:, :2]
+    toward = (v * u).sum(dim=1).clamp(-max_speed, max_speed)
+    # Aimed episodes only, and not within a centimetre of the target.
+    aimed = (cmd.strength > 0) & (dist > 0.01)
+    return toward * (cmd.in_flight & aimed).float()
+
+
 def anchored_drift(env: Any, command_name: str = "jump", scale: float = 0.10,
                    deadband: float = 0.0) -> torch.Tensor:
     """Upstream's `horizontal_drift` with a moving anchor: the take-off point
@@ -177,6 +195,6 @@ def anchored_drift(env: Any, command_name: str = "jump", scale: float = 0.10,
 
 
 __all__ = [
-    "OceanJumpCommand", "OceanJumpCommandCfg", "anchored_drift", "apex_on_target",
+    "OceanJumpCommand", "OceanJumpCommandCfg", "anchored_drift", "apex_on_target", "flight_progress",
     "jump_target", "landing_target", "target_offset",
 ]
