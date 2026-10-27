@@ -91,3 +91,4 @@ __all__ = [
 from .ocean import posture  # noqa: F401,E402
 from .ocean import walk  # noqa: F401,E402
 from .ocean import jump  # noqa: F401,E402
+from .ocean import five_foot  # noqa: F401,E402
