@@ -21,6 +21,11 @@ from ..common import add_trajectory, make_nominal
 #: The model is built at this condition (keel sized and trimmed for beta 0.8, the
 #: crown tank half full); per-environment beta changes the keel's mass only.
 BASE = dict(mode="full", buoyancy_ratio=0.8, crown_air=0.5)
+#: The submarine kit for tank-driven flights (docs/JUMP.md section 7): keel sized
+#: for beta 1.02 with the tank blown, so flooded it is 0.86 and blown it floats.
+SUBMARINE = dict(mode="full", buoyancy_ratio=1.02, crown_air=1.0)
+#: Pump rate, tank fraction per second: a full tank moves in 2 s.
+TANK_RATE = 0.5
 #: Training ranges (docs/JUMP.md section 3).
 BETA_RANGE = (0.75, 0.98)
 FRICTION_RANGE = (0.4, 0.8)
@@ -57,14 +62,28 @@ def env_cfg(
     buoyancy_ratio: float | None = None,
     ground_friction: float | None = None,
     jump: tuple[float, float] | None = None,
+    current: tuple[float, float] | None = None,
+    tank_script: str | None = None,
+    episode_s: float | None = None,
     nominal: bool = False,
     trajectory_out: str | None = None,
 ) -> ManagerBasedRlEnvCfg:
     cfg = _base.env_cfg(asset=asset, play=play)
-    base = HydroCfg(**BASE)
+    if (tank_script or current or episode_s) and not play:
+        raise ValueError("--tank-script, --current and --episode-s are for replays")
+    base = HydroCfg(**(SUBMARINE if tank_script else BASE))
     check_model(asset or JUMPER_XML)
     install(cfg, base)
-    cfg.episode_length_s = EPISODE_S
+    cfg.episode_length_s = episode_s or EPISODE_S
+    if tank_script:
+        # The keel is the submarine's whatever beta was asked; the tank sets beta.
+        from oceanking.tank import CrownTank
+
+        buoyancy_ratio = SUBMARINE["buoyancy_ratio"]
+        cfg.events["crown_tank"] = EventTermCfg(
+            func=CrownTank, mode="step",
+            params={"hydro": base.as_dict(), "rate": TANK_RATE, "start_air": 0.0,
+                    "script": tank_script})
 
     # ── water per environment (no current yet: docs/JUMP.md section 3) ──
     cfg.events["ocean_buoyancy"] = EventTermCfg(
@@ -75,7 +94,8 @@ def env_cfg(
     cfg.events["ocean_water"] = EventTermCfg(
         func=water.WaterReset, mode="reset",
         params={"current_max": 0.0, "current_start": 0.0, "ramp_steps": 1,
-                "friction_range": FRICTION_RANGE, "current": (0.0, 0.0),
+                "friction_range": FRICTION_RANGE,
+                "current": tuple(current) if current else (0.0, 0.0),
                 "friction": ground_friction},
     )
 
@@ -135,5 +155,6 @@ def env_cfg(
     if trajectory_out:
         add_trajectory(cfg, play, trajectory_out, {
             "task": "ocean.jump", "hydro": base.as_dict(), "buoyancy_ratio": buoyancy_ratio,
-            "ground_friction": ground_friction, "jump": jump})
+            "ground_friction": ground_friction, "jump": jump, "current": current,
+            "tank_script": tank_script})
     return cfg

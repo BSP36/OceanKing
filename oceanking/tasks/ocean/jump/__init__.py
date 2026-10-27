@@ -44,6 +44,16 @@ def cli_args(group):
                        metavar=("STRENGTH", "DEG"),
                        help="pin the target: strength 0-1 (x reach 0.3 m) and direction, "
                        "degrees from forward, counter-clockwise (default: drawn)")
+    current = env("OCEAN_CURRENT")
+    group.add_argument("--current", dest="current", type=float, nargs=2,
+                       default=[float(v) for v in current.split()] if current else None,
+                       metavar=("VX", "VY"), help="replays: the current, world frame, m/s")
+    group.add_argument("--tank-script", dest="tank_script", default=env("OCEAN_TANK_SCRIPT"),
+                       metavar="FILE",
+                       help="replays: the submarine kit (beta 0.86 flooded, 1.02 blown) and "
+                       "a file defining air(t) -> crown tank air fraction (oceanking.tank)")
+    group.add_argument("--episode-s", dest="episode_s", type=float, default=None,
+                       metavar="S", help="replays: episode length (default 8 s)")
     group.add_argument("--nominal", dest="nominal", action="store_true",
                        default=(env("OCEAN_NOMINAL") or "") in ("1", "true", "on", "yes"),
                        help="replays: no startup randomisation (foot friction, COM, "
@@ -51,4 +61,5 @@ def cli_args(group):
     group.add_argument("--trajectory-out", dest="trajectory_out",
                        default=env("OCEAN_TRAJECTORY_OUT"), metavar="PATH",
                        help="replays: record the root pose every control step")
-    return ("buoyancy_ratio", "ground_friction", "jump", "nominal", "trajectory_out")
+    return ("buoyancy_ratio", "ground_friction", "jump", "current", "tank_script", "episode_s",
+            "nominal", "trajectory_out")
