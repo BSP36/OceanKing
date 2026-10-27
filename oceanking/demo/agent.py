@@ -27,10 +27,70 @@ import json
 import math
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+#: Claude Opus 5.5 prices, USD per million tokens: input, cache write (5 min),
+#: cache read, output. A fallback turn is billed at its own model's rates, which
+#: this does not see; it is an estimate for the budget guard, not the bill.
+PRICE = {"input": 4.00, "cache_write": 5.00, "cache_read": 0.20, "output": 20.00}
+#: Where every run's estimated spend is appended (git-ignored).
+LEDGER = Path(__file__).resolve().parents[2] / "scratch" / "api_ledger.jsonl"
+
+
+class BudgetExceeded(RuntimeError):
+    pass
+
+
+@dataclass
+class Spend:
+    """Accumulates `usage` across requests and stops a run past `limit_usd`."""
+
+    limit_usd: float = 5.0
+    input: int = 0
+    cache_write: int = 0
+    cache_read: int = 0
+    output: int = 0
+
+    def add(self, usage) -> None:
+        g = lambda k: int(getattr(usage, k, 0) or 0)  # noqa: E731
+        self.input += g("input_tokens")
+        self.cache_write += g("cache_creation_input_tokens")
+        self.cache_read += g("cache_read_input_tokens")
+        self.output += g("output_tokens")
+        if self.usd > self.limit_usd:
+            raise BudgetExceeded(f"estimated spend {self.usd:.2f} USD passed the "
+                                 f"{self.limit_usd:.2f} USD limit")
+
+    @property
+    def usd(self) -> float:
+        return (self.input * PRICE["input"] + self.cache_write * PRICE["cache_write"]
+                + self.cache_read * PRICE["cache_read"] + self.output * PRICE["output"]) / 1e6
+
+    def as_dict(self) -> dict:
+        return {"input": self.input, "cache_write": self.cache_write,
+                "cache_read": self.cache_read, "output": self.output,
+                "usd_estimate": round(self.usd, 4)}
+
+
+def load_key(env_file: Path | None = None) -> None:
+    """Put the key from the repository's `.env` (`CLAUDE_API_KEY` or
+    `ANTHROPIC_API_KEY`) into `ANTHROPIC_API_KEY`, unless one is set already. The
+    file is git-ignored; the key is never printed."""
+    import os
+
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return
+    env_file = env_file or Path(__file__).resolve().parents[2] / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text().splitlines():
+        key, _, value = line.strip().partition("=")
+        if key in ("CLAUDE_API_KEY", "ANTHROPIC_API_KEY") and value.strip():
+            os.environ["ANTHROPIC_API_KEY"] = value.strip().strip('"').strip("'")
+            return
 
 SYSTEM = """You are the onboard controller of OceanKing, a six-legged crab robot walking on \
 the seabed. Its left front leg is carried as a claw. Your mission: collect the sunken \
@@ -136,10 +196,12 @@ def run_tool(skills, name: str, args: dict) -> list[dict] | str:
 
 
 def run_mission(client, skills, *, max_turns: int = 60, effort: str = "medium",
-                transcript: Transcript | None = None, caption=None) -> str:
+                transcript: Transcript | None = None, caption=None,
+                spend: Spend | None = None) -> str:
     """The agent loop. `client` is an `anthropic.Anthropic` (or a stand-in with the
     same `beta.messages.create`). Returns the finish report."""
     transcript = transcript or Transcript()
+    spend = spend or Spend(limit_usd=float("inf"))
     messages: list[dict] = [{"role": "user", "content":
                              "Start the mission. The robot is standing still, claw empty."}]
     for turn in range(max_turns):
@@ -147,7 +209,16 @@ def run_mission(client, skills, *, max_turns: int = 60, effort: str = "medium",
             model=MODEL, max_tokens=16000, system=SYSTEM, tools=TOOLS, messages=messages,
             thinking={"type": "adaptive"}, output_config={"effort": effort},
             betas=[FALLBACK_BETA], fallbacks="default",
+            # Every turn resends the history: cache the prefix up to its last block.
+            cache_control={"type": "ephemeral"},
         )
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            try:
+                spend.add(usage)
+            except BudgetExceeded as error:
+                transcript.add(turn=turn, budget=str(error))
+                return f"stopped: {error}"
         if response.stop_reason == "refusal":
             transcript.add(turn=turn, refusal=True)
             return "the request was declined"
@@ -244,6 +315,8 @@ def main() -> None:
     ap.add_argument("--video", default=None, help="record an MP4 of the run here")
     ap.add_argument("--transcript", default=None, help="write the transcript (JSON) here")
     ap.add_argument("--max-turns", type=int, default=60)
+    ap.add_argument("--budget-usd", type=float, default=5.0,
+                    help="stop the run when its estimated spend passes this (default 5)")
     ap.add_argument("--effort", default="medium", choices=("low", "medium", "high", "xhigh"))
     ap.add_argument("--checkpoint", default=None,
                     help="five-foot policy (default: the arm-out one if trained, else official)")
@@ -269,18 +342,29 @@ def main() -> None:
     else:
         import anthropic
 
+        load_key()
         client = anthropic.Anthropic()
     transcript = Transcript()
+    spend = Spend(limit_usd=args.budget_usd)
 
     def caption(text):
         sim.caption = text
 
-    report = run_mission(client, skills, max_turns=args.max_turns, effort=args.effort,
-                         transcript=transcript, caption=caption)
+    try:
+        report = run_mission(client, skills, max_turns=args.max_turns, effort=args.effort,
+                             transcript=transcript, caption=caption, spend=spend)
+    finally:
+        if not args.dry_run:
+            LEDGER.parent.mkdir(parents=True, exist_ok=True)
+            with open(LEDGER, "a") as f:
+                f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                    "video": args.video, **spend.as_dict()}) + "\n")
+            print(f"[agent] estimated spend this run: {spend.usd:.3f} USD "
+                  f"(ledger {LEDGER})")
     result = {"report": report, "score": score(sim), "sim_s": round(sim.time, 1),
-              "events": transcript.events}
+              "spend": spend.as_dict(), "events": transcript.events}
     sim.close()
-    print(json.dumps({k: result[k] for k in ("report", "score", "sim_s")}, indent=2))
+    print(json.dumps({k: result[k] for k in ("report", "score", "sim_s", "spend")}, indent=2))
     if args.transcript:
         with open(args.transcript, "w") as f:
             json.dump(result, f, indent=2, default=str)

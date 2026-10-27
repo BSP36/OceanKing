@@ -36,14 +36,17 @@ class Trash:
 
 #: The trash. Gripped across, near the jaw tips: the open claw is 75 mm across
 #: at the tips and 58 mm 55 mm in from the hinge (`five_foot/tools/claw_mouth.py`),
-#: so a 66 mm can does not go in (grasp_check, 2026-10-27); these are 48-52 mm.
+#: so a 66 mm can does not go in (grasp_check, 2026-10-27); these are 38-40 mm.
 TRASH: tuple[Trash, ...] = (
-    # A slim 250 ml can, flooded: aluminium and the sand it took on.
-    Trash("can", "cylinder", (0.020, 0.060), 1300.0, (0.85, 0.08, 0.08, 1.0)),
-    # A small glass bottle on its base, flooded: glass (2500) and water averaged.
-    Trash("bottle", "cylinder", (0.020, 0.080), 1500.0, (0.10, 0.75, 0.30, 1.0)),
-    # A waterlogged drink carton.
-    Trash("carton", "box", (0.019, 0.019, 0.055), 1400.0, (0.95, 0.80, 0.05, 1.0)),
+    # A slim can, flooded and half full of sand. Heavy and short on purpose: the
+    # first trash (1300-1500 kg/m^3, 12-16 cm tall, ~0.3 N under water) tipped over
+    # at a touch of a leg or a jaw on the way in (docs/DEMO.md); at 2200-2500 its
+    # weight under water is ~6 times that and it stands 10-13 cm.
+    Trash("can", "cylinder", (0.020, 0.050), 2500.0, (0.85, 0.08, 0.08, 1.0)),
+    # A small glass bottle on its base, silted up.
+    Trash("bottle", "cylinder", (0.020, 0.065), 2500.0, (0.10, 0.75, 0.30, 1.0)),
+    # A drink carton full of mud.
+    Trash("carton", "box", (0.019, 0.019, 0.050), 2200.0, (0.95, 0.80, 0.05, 1.0)),
 )
 
 def _register_heights() -> None:
@@ -67,18 +70,23 @@ DROP_RADIUS = 0.18
 ZONE_RGBA = (0.95, 0.10, 0.85, 1.0)
 
 
+#: Sliding friction of the trash: upstream's row's 0.35. 0.8 (fouled trash) was
+#: tried and grasped 2 of 9 against 3-6 of 9 at 0.35 (2026-10-27, small samples).
+TRASH_FRICTION = (0.35, 0.0002, 0.00012)
+
+
 def _trash_spec(t: Trash) -> Any:
     from tasks.jumper.five_foot import objects
 
     spec = objects._prop_spec()
     body = objects._free_body(spec, t.name)
+    look = dict(density=t.density, rgba=list(t.rgba), friction=list(TRASH_FRICTION))
     if t.kind == "cylinder":
         objects._prop_geom(body, name=t.name, type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                           size=[t.size[0], t.size[1], 0.0], density=t.density,
-                           rgba=list(t.rgba))
+                           size=[t.size[0], t.size[1], 0.0], **look)
     else:
         objects._prop_geom(body, name=t.name, type=mujoco.mjtGeom.mjGEOM_BOX,
-                           size=list(t.size), density=t.density, rgba=list(t.rgba))
+                           size=list(t.size), **look)
     return spec
 
 

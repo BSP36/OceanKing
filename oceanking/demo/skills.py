@@ -49,6 +49,8 @@ STANDOFF = 0.09
 TOLERANCE = 0.012
 #: How far inside the mouth the trash is brought, m.
 GRIP_DEPTH = 0.015
+#: Shoulder lift with a piece in the claw, rad (see `grasp`).
+LIFT_RAD = 0.45
 #: The finger closes to `GRIPPER_CLOSED` (0.10 rad) on nothing; on a 50 mm object
 #: it stops well short (measured: about -0.3 rad).
 HOLD_MARGIN = 0.15
@@ -174,7 +176,7 @@ class Skills:
         return msg
 
     def _servo(self, label: str, offset: np.ndarray, tol: float, timeout: float,
-               track: bool) -> float:
+               track: bool, track_near: bool = False) -> float:
         """Walk until the base-frame point `offset` is on the target's ground fix.
         Far: full speed, facing the target so the camera keeps it, re-detecting.
         Near: pulses at the walking speed, each as long as the error asks, then a
@@ -186,7 +188,7 @@ class Skills:
                 raise RuntimeError(f"no fix on {label}")
             t = self.to_base(self.targets[label])
             far = np.linalg.norm(t) > TRACK_RANGE + np.linalg.norm(offset)
-            if track and far:
+            if track and (far or track_near):
                 self.detections()
                 t = self.to_base(self.targets[label])
             e = t - offset
@@ -277,12 +279,20 @@ class Skills:
             e = t - aim
             if e[0] <= 0.06:
                 break
-            heading = math.atan2(t[1], t[0])
+            # Face so that the target lies on the *mouth's* line, not the body's: the
+            # mouth is ~7.6 cm left of the centre line, and facing the target with
+            # the body left the mouth that far off for targets on the right -- past
+            # what the arm trims, and a jaw knocked them over (2026-10-27).
+            r = float(np.linalg.norm(t))
+            heading = math.atan2(t[1], t[0]) - math.asin(
+                float(np.clip(self.mouth_offset[1] / max(r, 1e-6), -1.0, 1.0)))
+            if r > 0.5 and abs(heading) > math.radians(25):
+                self.sim.walk(0.0, 0.0, math.copysign(MAX_TURN, heading), PERIOD)
+                continue
             wz = 0.0
-            if np.linalg.norm(t) > 0.5 and abs(heading) > math.radians(15):
-                wz = math.copysign(MIN_TURN if abs(heading) < math.radians(40) else MAX_TURN,
-                                   heading)
-            vy = float(np.clip(2.5 * e[1], -0.07, 0.07))
+            if r > 0.5 and abs(heading) > math.radians(6):
+                wz = math.copysign(MIN_TURN, heading)
+            vy = float(np.clip(2.5 * e[1], -0.08, 0.08))
             self.sim.walk(MAX_SPEED, vy, wz, PERIOD)
         self.sim.stand(0.4)
         for _ in range(8):
@@ -304,12 +314,13 @@ class Skills:
 
     def grasp(self) -> str:
         self.sim.claw(closed=True, settle=1.0)
-        # Lift from wherever the arm is aimed. With the arm-out policy only by the
-        # 0.1 rad it was trained to walk with (the full 0.7 rad lift left it unable
-        # to walk: 100 s in place, 2026-10-27): the trash comes ~6 mm off the floor
-        # and rides in the claw (carried 5 s walking and turning with under 15 mm
-        # of slip). The stowed policy does not walk with the arm out anyway.
-        raise_by = 0.1 if self.carry_pose == "reach" else 0.7
+        # Lift from wherever the arm is aimed, by what the arm-out policy was
+        # trained to walk with: the shoulder up to 0.5 rad (`--arm reach_lift`),
+        # 0.45 here, the trash ~3 cm off the floor. (A 0.7 rad lift left the first
+        # arm-out policy unable to walk; within its +-0.1 rad the trash, 6-9 mm up,
+        # dragged and anchored it.) The stowed policy does not walk with the arm
+        # out anyway.
+        raise_by = LIFT_RAD if self.carry_pose == "reach" else 0.7
         lift = np.array(self.sim.arm_goal) + np.array([0.0, -raise_by, 0.0, 0.0])
         self.sim.presets["lift_now"] = tuple(float(v) for v in lift)
         self.sim.arm("lift_now", settle=0.6)
@@ -351,7 +362,10 @@ class Skills:
             self.walk(0.3, "forward")
         if label not in self.targets:
             return f"cannot go to {label}: it stays without a distance; get closer."
-        err = self._servo(label, self.mouth_offset, 0.04, timeout=90.0, track=True)
+        # The zone is large and flat: keep refreshing its fix all the way in (the
+        # far-only refresh left pieces 0.3-0.4 m short of it, 2026-10-27).
+        err = self._servo(label, self.mouth_offset, 0.04, timeout=90.0, track=True,
+                          track_near=True)
         msg = f"claw over {label}, {err * 100:.0f} cm off its last seen position"
         self._say(msg)
         return msg

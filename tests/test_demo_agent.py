@@ -85,3 +85,29 @@ def test_the_loop_sends_valid_requests_images_and_errors(skills):
     assert "cannot approach nothing" in str(third["content"]) or third["is_error"]
     assert [e.get("tool") for e in transcript.events if "tool" in e] == ["look", "approach",
                                                                          "status"]
+
+
+def test_spend_is_estimated_and_capped():
+    from types import SimpleNamespace
+
+    from oceanking.demo import agent
+
+    s = agent.Spend(limit_usd=0.10)
+    s.add(SimpleNamespace(input_tokens=10_000, cache_creation_input_tokens=0,
+                          cache_read_input_tokens=0, output_tokens=1_000))
+    assert s.usd == pytest.approx(0.04 + 0.02)
+    with pytest.raises(agent.BudgetExceeded):
+        s.add(SimpleNamespace(input_tokens=10_000, output_tokens=1_000))
+
+
+def test_the_key_is_read_from_env_file_without_echo(tmp_path, monkeypatch, capsys):
+    import os
+
+    from oceanking.demo import agent
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    f = tmp_path / ".env"
+    f.write_text("OTHER=1\nCLAUDE_API_KEY=sk-test-123\n")
+    agent.load_key(f)
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-test-123"
+    assert "sk-test" not in capsys.readouterr().out
