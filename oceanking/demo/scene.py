@@ -39,12 +39,21 @@ class Trash:
 #: so a 66 mm can does not go in (grasp_check, 2026-10-27); these are 48-52 mm.
 TRASH: tuple[Trash, ...] = (
     # A slim 250 ml can, flooded: aluminium and the sand it took on.
-    Trash("can", "cylinder", (0.026, 0.060), 1300.0, (0.85, 0.08, 0.08, 1.0)),
+    Trash("can", "cylinder", (0.020, 0.060), 1300.0, (0.85, 0.08, 0.08, 1.0)),
     # A small glass bottle on its base, flooded: glass (2500) and water averaged.
-    Trash("bottle", "cylinder", (0.025, 0.080), 1500.0, (0.10, 0.75, 0.30, 1.0)),
+    Trash("bottle", "cylinder", (0.020, 0.080), 1500.0, (0.10, 0.75, 0.30, 1.0)),
     # A waterlogged drink carton.
-    Trash("carton", "box", (0.024, 0.024, 0.055), 1400.0, (0.95, 0.80, 0.05, 1.0)),
+    Trash("carton", "box", (0.019, 0.019, 0.055), 1400.0, (0.95, 0.80, 0.05, 1.0)),
 )
+
+def _register_heights() -> None:
+    from oceanking.demo import perception
+
+    for t in TRASH:
+        perception.HEIGHTS[t.name] = 2 * t.half_height
+
+
+_register_heights()
 
 #: Where things lie, metres from the robot's spawn (origin, facing +x).
 LAYOUT: dict[str, tuple[float, float]] = {

@@ -1,0 +1,271 @@
+"""The robot's skills for the demo: what the agent can ask OceanKing to do.
+
+Each skill uses only what the robot can sense about itself and see: the onboard
+camera (through `perception.detect`), its own pose by odometry (in simulation the
+base's pose, which an odometer on the robot approximates), its joint encoders
+(the claw closes less far on something it holds). None reads where the trash is.
+
+- `look()`: an onboard image and what the detector finds in it, with ground
+  distance and bearing;
+- `turn(degrees)`, `walk(metres, direction)`: odometry-closed moves;
+- `approach(label)`: walk to a detected object until the claw's mouth is on it --
+  the tracking part: re-detect while it is in view, dead-reckon the last ground
+  fix once it is too close to see, put the arm out short of it, creep the rest;
+- `grasp()`: close, lift, and report whether something is held (finger angle);
+- `release()`: open, stow;
+- `go_to(label)`: walk until the mouth is over a detected place (the drop zone).
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from oceanking.demo import scene as _scene  # noqa: F401  (registers the target heights)
+from oceanking.demo.perception import Detection, detect
+
+#: Walking speeds the five-foot policy tracks under water, m/s and rad/s. It has a
+#: wide standing band: measured (native, beta 0.8, 2026-10-27) 0.08 m/s commanded
+#: walks 0.002 m/s and 0.10 sideways 0.01; 0.15 walks 0.12 either way; turns below
+#: 0.3 rad/s do not turn, 0.4 turns 0.40. So moves are at full speed, and fine
+#: positioning is by pulses: 0.15 m/s for 0.2 s moves 23 mm, for 0.3 s 36 mm.
+MAX_SPEED = 0.15
+MIN_SPEED = 0.15
+MAX_TURN = 0.6
+MIN_TURN = 0.45
+#: Control period of the closed-loop moves, s.
+PERIOD = 0.25
+#: Re-detect the target while it is farther than this from the mouth, m.
+TRACK_RANGE = 0.45
+#: Arm-out stand-off: stop with the target this far *beyond* the mouth's reach
+#: position before putting the arm out, m. The stowed claw sticks out ~0.22 m ahead
+#: of the base, so a stand-off short of the mouth walked it into the trash and
+#: knocked it over (2026-10-27); 0.09 m beyond keeps the target at ~0.35 m.
+STANDOFF = 0.09
+#: Mouth-on-target tolerance, m (the jaws are 75 mm apart at the tips, the trash
+#: 48-52 mm across).
+TOLERANCE = 0.012
+#: The finger closes to `GRIPPER_CLOSED` (0.10 rad) on nothing; on a 50 mm object
+#: it stops well short (measured: about -0.3 rad).
+HOLD_MARGIN = 0.15
+
+
+@dataclass
+class Log:
+    lines: list[str] = field(default_factory=list)
+
+    def __call__(self, msg: str) -> None:
+        self.lines.append(msg)
+
+
+def _wrap(a: float) -> float:
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+class Skills:
+    def __init__(self, sim, verbose: bool = False):
+        self.sim = sim
+        self.log = Log()
+        self.verbose = verbose
+        self.targets: dict[str, tuple[float, float]] = {}  # last ground fix per label
+        self._whole: dict[str, bool] = {}
+        self.mouth_offset = self._calibrate_mouth()
+
+    def _say(self, msg: str) -> None:
+        self.log(msg)
+        if self.verbose:
+            print(f"[skills t={self.sim.time:6.1f}] {msg}")
+
+    @property
+    def carry_pose(self) -> str:
+        """Where the arm rides while walking: the pose the policy walks with."""
+        return self.sim.arm_mode
+
+    def _calibrate_mouth(self) -> np.ndarray:
+        """The mouth in the base frame at `reach`: the robot's own arm kinematics,
+        read once by putting the arm out."""
+        self.sim.arm("reach", settle=0.4)
+        offset = self.to_base(self.sim.mouth()[:2])
+        self.sim.arm(self.carry_pose, settle=0.3)
+        return offset
+
+    # ── frames ──────────────────────────────────────────────────────────────
+
+    def to_base(self, xy) -> np.ndarray:
+        x, y, yaw = self.sim.pose()
+        d = np.asarray(xy, float) - np.array([x, y])
+        c, s = math.cos(yaw), math.sin(yaw)
+        return np.array([c * d[0] + s * d[1], -s * d[0] + c * d[1]])
+
+    # ── seeing ──────────────────────────────────────────────────────────────
+
+    def detections(self) -> list[Detection]:
+        sim = self.sim
+        img = sim.camera()
+        pos, mat = sim.camera_pose()
+        _, fovy = sim.camera_fov()
+        dets = detect(img, fovy, pos, mat, sim.pose(), ignore=sim.self_mask())
+        # Per label, the largest blob's ground fix, a whole one first; one partly
+        # hidden at its bottom is kept only when there is no better fix yet.
+        seen = set()
+        for d in sorted(dets, key=lambda d: (not d.whole, -d.pixels)):
+            if d.ground is None or d.label in seen:
+                continue
+            if d.whole or d.label not in self.targets or not self._whole.get(d.label, False):
+                self.targets[d.label] = d.ground
+                self._whole[d.label] = d.whole
+            seen.add(d.label)
+        self._last_image = img
+        return dets
+
+    def look(self) -> tuple[np.ndarray, list[Detection]]:
+        dets = self.detections()
+        return self._last_image, dets
+
+    # ── moves ───────────────────────────────────────────────────────────────
+
+    def turn(self, degrees: float) -> str:
+        """Turn in place, continuously: pulses do not turn (the gait needs ~0.5 s
+        to start), so the command holds until the heading is within the coast."""
+        start = self.sim.pose()[2]
+        goal = start + math.radians(degrees)
+        for _ in range(int(60 / PERIOD)):
+            err = _wrap(goal - self.sim.pose()[2])
+            if abs(err) < math.radians(6):
+                break
+            wz = math.copysign(MAX_TURN if abs(err) > math.radians(25) else MIN_TURN, err)
+            self.sim.walk(0.0, 0.0, wz, PERIOD / 2)
+        self.sim.stand(0.4)
+        turned = math.degrees(_wrap(self.sim.pose()[2] - start))
+        self._say(f"turned {turned:+.0f} deg")
+        return f"turned {turned:+.0f} deg"
+
+    def walk(self, metres: float, direction: str = "forward") -> str:
+        dirs = {"forward": (1, 0), "back": (-1, 0), "left": (0, 1), "right": (0, -1)}
+        ux, uy = dirs[direction]
+        x0, y0, _ = self.sim.pose()
+        for _ in range(int(120 / PERIOD)):
+            x, y, _ = self.sim.pose()
+            done = math.hypot(x - x0, y - y0)
+            if done >= metres - 0.01:
+                break
+            self.sim.walk(ux * MAX_SPEED, uy * MAX_SPEED, 0.0,
+                          min(PERIOD, max(0.12, (metres - done) / 0.12)))
+        self.sim.stand(0.3)
+        x, y, _ = self.sim.pose()
+        msg = f"walked {math.hypot(x - x0, y - y0):.2f} m {direction}"
+        self._say(msg)
+        return msg
+
+    def _servo(self, label: str, offset: np.ndarray, tol: float, timeout: float,
+               track: bool) -> float:
+        """Walk until the base-frame point `offset` is on the target's ground fix.
+        Far: full speed, facing the target so the camera keeps it, re-detecting.
+        Near: pulses at the walking speed, each as long as the error asks, then a
+        settle. Returns the remaining error, m."""
+        t_end = self.sim.time + timeout
+        err = np.inf
+        while self.sim.time < t_end:
+            if label not in self.targets:
+                raise RuntimeError(f"no fix on {label}")
+            t = self.to_base(self.targets[label])
+            far = np.linalg.norm(t) > TRACK_RANGE + np.linalg.norm(offset)
+            if track and far:
+                self.detections()
+                t = self.to_base(self.targets[label])
+            e = t - offset
+            err = float(np.linalg.norm(e))
+            if err < tol:
+                break
+            heading = math.atan2(t[1], t[0])
+            if far:
+                # Walk and turn at once, continuously: a turn needs ~0.5 s to start.
+                wz = 0.0
+                if abs(heading) > math.radians(15):
+                    wz = math.copysign(MIN_TURN if abs(heading) < math.radians(40) else MAX_TURN,
+                                       heading)
+                v = MAX_SPEED * e / err
+                self.sim.walk(float(v[0]), float(v[1]), wz, PERIOD)
+            else:
+                # One axis at a time at exactly the walking speed: a diagonal or a
+                # slow command sits in the standing band and does not move at all
+                # (an approach stalled for 17 s on (0.13, -0.08), 2026-10-27).
+                # A pulse includes ~0.15 s for the gait to start.
+                k = int(np.argmax(np.abs(e)))
+                v = [0.0, 0.0]
+                v[k] = math.copysign(MIN_SPEED, e[k])
+                self.sim.walk(v[0], v[1], 0.0, float(np.clip(abs(e[k]) / 0.11 + 0.15, 0.2, 0.6)))
+                self.sim.stand(0.3)
+        self.sim.stand(0.3)
+        return err
+
+    def approach(self, label: str) -> str:
+        """Bring the open claw onto `label`'s ground fix (from the last `look`).
+
+        With the arm-out policy the claw is open in front while walking, so the
+        trash enters the mouth from the front. With the official (stowed) policy
+        the robot stops with the trash beyond the stowed claw and puts the arm out
+        there -- which sweeps the trash aside (docs/GRASP.md): kept as the fallback."""
+        if label not in self.targets:
+            self.detections()
+        if label not in self.targets:
+            return f"cannot approach {label}: not in view. Look around first."
+        self.sim.claw(closed=False, settle=0.2)
+        if self.carry_pose == "reach":
+            # Line up 8 cm short of it, then come straight in along the jaws.
+            self._servo(label, self.mouth_offset - np.array([0.08, 0.0]), 0.02, timeout=60.0,
+                        track=True)
+            err = self._servo(label, self.mouth_offset, TOLERANCE, timeout=20.0, track=False)
+        else:
+            self.sim.arm("stow", settle=0.2)
+            short = self.mouth_offset + np.array([STANDOFF, 0.0])
+            self._servo(label, short, 0.03, timeout=60.0, track=True)
+            self.sim.arm("reach", settle=0.4)
+            err = self._servo(label, self.mouth_offset, TOLERANCE, timeout=20.0, track=False)
+        msg = f"claw at {label}, {err * 100:.1f} cm off its last seen position"
+        self._say(msg)
+        return msg
+
+    def grasp(self) -> str:
+        self.sim.claw(closed=True, settle=1.0)
+        self.sim.arm("lift", settle=0.6)
+        finger = float(self.sim.robot.data.joint_pos[0, self.sim._finger_id])
+        held = finger < self.sim.gripper_closed - HOLD_MARGIN
+        msg = (f"holding something (claw stopped at {finger:+.2f} rad)" if held else
+               f"nothing in the claw (closed to {finger:+.2f} rad)")
+        self._say(msg)
+        return msg
+
+    def release(self) -> str:
+        self.sim.arm("reach", settle=0.3)
+        self.sim.claw(closed=False, settle=1.0)
+        self.sim.arm(self.carry_pose, settle=0.3)
+        self._say("released")
+        return "claw opened and arm stowed"
+
+    def back_off(self, metres: float = 0.15) -> str:
+        return self.walk(metres, "back")
+
+    def go_to(self, label: str) -> str:
+        """Bring the claw's mouth over `label` (the drop zone) holding what it holds."""
+        if label not in self.targets:
+            self.detections()
+        if label not in self.targets:
+            return f"cannot go to {label}: not in view. Look around first."
+        err = self._servo(label, self.mouth_offset, 0.04, timeout=90.0, track=True)
+        msg = f"claw over {label}, {err * 100:.0f} cm off its last seen position"
+        self._say(msg)
+        return msg
+
+    def status(self) -> str:
+        x, y, yaw = self.sim.pose()
+        finger = float(self.sim.robot.data.joint_pos[0, self.sim._finger_id])
+        return (f"time {self.sim.time:.1f} s; odometry x {x:+.2f} m, y {y:+.2f} m, heading "
+                f"{math.degrees(yaw):+.0f} deg; claw at {finger:+.2f} rad "
+                f"({'closed' if self.sim.finger_goal > 0 else 'open'}); known fixes: "
+                + ", ".join(f"{k} at ({v[0]:+.2f}, {v[1]:+.2f})" for k, v in self.targets.items()))
+
+
+__all__ = ["Skills"]

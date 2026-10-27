@@ -46,4 +46,8 @@ def cli_args(group):
                        help="replays: record the root pose every control step")
     group.add_argument("--demo-scene", dest="demo_scene", action="store_true",
                        help="the demo's sunken trash and drop zone (oceanking.demo.scene)")
-    return (*names, "buoyancy_ratio", "current", "trajectory_out", "demo_scene")
+    group.add_argument("--arm", dest="arm", choices=("stow", "reach"),
+                       default=env("OCEAN_ARM") or "stow",
+                       help="where the carried arm is held: upstream's stow, or out at the "
+                       "grasp preset (docs/GRASP.md)")
+    return (*names, "buoyancy_ratio", "current", "trajectory_out", "demo_scene", "arm")

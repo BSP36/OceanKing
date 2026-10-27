@@ -9,6 +9,8 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+# The demo agent (oceanking/demo/agent.py) drives the robot through the Claude API.
+demo = ["anthropic>=1.0"]
 
 [build-system]
 requires = ["setuptools>=64"]

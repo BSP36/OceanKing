@@ -34,7 +34,9 @@ CLASSES: dict[str, tuple[tuple[float, float], float, float]] = {
     "drop_zone": ((262.0, 330.0), 0.50, 0.10),  # magenta: 268-283 in the water light
 }
 MIN_PIXELS = 12
-MAX_ASPECT = 3.5
+#: A red blob this many times taller than wide is one of the scene's stakes, not
+#: the can (only red is shared with them; the 40 mm bottle is 4 times as tall).
+MAX_ASPECT = 5.0
 
 
 @dataclass
@@ -45,13 +47,17 @@ class Detection:
     distance: float | None  # m, along the ground from the camera
     bearing: float | None  # deg, positive to the left of the robot's heading
     ground: tuple[float, float] | None  # world xy of the contact point
+    #: False when the blob touches the image border or the robot's own body: its
+    #: lowest pixel may not be where it meets the ground.
+    whole: bool = True
 
     def describe(self) -> str:
         if self.distance is None:
             return f"{self.label}: seen at image box {self.box}, distance unknown"
         side = "left" if self.bearing >= 0 else "right"
+        note = "" if self.whole else " (partly hidden: distance approximate)"
         return (f"{self.label}: {self.distance:.2f} m away, {abs(self.bearing):.0f} deg to the "
-                f"{side}")
+                f"{side}{note}")
 
 
 def _hsv(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -72,16 +78,24 @@ def _mask(h, s, v, hue, smin, vmin) -> np.ndarray:
     return inside & (s >= smin) & (v >= vmin)
 
 
+#: Known heights of the targets, m. (A fix from the top edge at this height was
+#: tried for trash whose bottom the claw hides, and dropped: the onboard camera sits
+#: ~0.13 m up, level with a can's top, so that ray grazes the plane and a pixel is
+#: tens of centimetres -- 0.75 m read for 0.90, 2026-10-27.)
+HEIGHTS: dict[str, float] = {}
+
+
 def ground_point(u: float, v: float, size: tuple[int, int], fovy: float,
-                 cam_pos: np.ndarray, cam_mat: np.ndarray) -> np.ndarray | None:
-    """Where the ray through pixel (u, v) meets z = 0, world frame; None above the horizon."""
+                 cam_pos: np.ndarray, cam_mat: np.ndarray, z: float = 0.0) -> np.ndarray | None:
+    """Where the ray through pixel (u, v) meets the plane at height `z`, world
+    frame; None if it does not (above the horizon)."""
     w, h = size
     f = (h / 2) / math.tan(fovy / 2)
     d_cam = np.array([(u - w / 2) / f, -(v - h / 2) / f, -1.0])
     d = cam_mat @ d_cam
-    if d[2] >= -1e-6:
+    if d[2] >= -1e-6 or cam_pos[2] <= z:
         return None
-    t = -cam_pos[2] / d[2]
+    t = (z - cam_pos[2]) / d[2]
     return cam_pos + t * d
 
 
@@ -110,8 +124,16 @@ def detect(rgb: np.ndarray, fovy: float | None = None, cam_pos=None, cam_mat=Non
                 continue
             v0, v1 = sl[0].start, sl[0].stop
             u0, u1 = sl[1].start, sl[1].stop
-            if label != "drop_zone" and (v1 - v0) > MAX_ASPECT * (u1 - u0):
+            if label == "can" and (v1 - v0) > MAX_ASPECT * (u1 - u0):
                 continue  # a pole, not trash
+            border = not (v1 < H - 2 and u0 > 1 and u1 < W - 1)
+            hidden = False
+            if ignore is not None and not border:
+                # Hidden at the bottom: the rows just under the blob are mostly the
+                # robot's own body (a blob merely beside it is still whole).
+                below = ignore[v1:min(v1 + 8, H), u0:u1]
+                hidden = bool(below.size and below.mean() > 0.15)
+            whole = not border and not hidden
             dist = bearing = ground = None
             if fovy is not None and cam_pos is not None and robot_pose is not None:
                 g = ground_point((u0 + u1) / 2, v1 - 0.5, (W, H), fovy, cam_pos, cam_mat)
@@ -122,7 +144,7 @@ def detect(rgb: np.ndarray, fovy: float | None = None, cam_pos=None, cam_mat=Non
                     rel = math.atan2(dy, dx) - yaw
                     bearing = math.degrees(math.atan2(math.sin(rel), math.cos(rel)))
                     ground = (float(g[0]), float(g[1]))
-            out.append(Detection(label, count, (u0, v0, u1, v1), dist, bearing, ground))
+            out.append(Detection(label, count, (u0, v0, u1, v1), dist, bearing, ground, whole))
     out.sort(key=lambda d: -d.pixels)
     return out
 

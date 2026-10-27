@@ -31,11 +31,15 @@ CHECKPOINT = REPO / "jumper/tasks/jumper/five_foot/out/example/model_86600.pt"
 CAMERA = "robot/onboard"
 
 #: Arm presets: (J0, J1, J2, J3) of the carried left-front arm, radians.
-#: `stow` is the task's hold (`claw.py::LF_GRASP`); `reach` and `lift` are set by
-#: `oceanking/tools/grasp_check.py` (docs/GRASP.md).
+#: `stow` is the task's hold (`claw.py::LF_GRASP`); `reach` and `lift` are the
+#: grasp presets of docs/GRASP.md.
 ARM_PRESETS: dict[str, tuple[float, float, float, float]] = {
     "stow": (-0.5236, -1.5708, -0.5236, -1.3090),
+    "reach": (-1.1013, -1.3142, -0.8291, 0.6949),
+    "lift": (-1.1013, -2.0142, -0.8291, 0.6949),
 }
+#: The policy fine-tuned to walk with the arm at `reach` (docs/GRASP.md), if trained.
+CHECKPOINT_REACH = REPO / "oceanking/tasks/ocean/five_foot/out/reach/model.pt"
 #: Arm joint speed while moving to a preset, rad/s (rl-wbc-fsm's interpolation).
 ARM_RATE = 1.5
 
@@ -49,7 +53,8 @@ class Command:
 class OceanSim:
     def __init__(self, checkpoint: Path | str = CHECKPOINT, *, beta: float = 0.8,
                  current: tuple[float, float] = (0.0, 0.0), scene: str = "seabed",
-                 camera_size: tuple[int, int] = (640, 480), presets: dict | None = None):
+                 camera_size: tuple[int, int] = (640, 480), presets: dict | None = None,
+                 arm: str = "stow"):
         import torch
         from mjrl.backend import resolve
         from mjrl.backend.select import use_backend
@@ -66,7 +71,7 @@ class OceanSim:
         import scenes
 
         cfg = tasks.load_env_cfg("ocean.five_foot", play=True, task_args={
-            "buoyancy_ratio": beta, "current": list(current), "demo_scene": True})
+            "buoyancy_ratio": beta, "current": list(current), "demo_scene": True, "arm": arm})
         if scene:
             scenes.apply(cfg, scene)
         cfg.scene.num_envs = 1
@@ -90,13 +95,15 @@ class OceanSim:
         self._finger_id = torch.as_tensor(self.robot.find_joints([FINGER_JOINT])[0])
         self.gripper_open, self.gripper_closed = GRIPPER_OPEN, GRIPPER_CLOSED
         self.presets = {**ARM_PRESETS, **(presets or {})}
-        self.arm_goal = np.array(self.presets["stow"])
-        self.arm_now = np.array(self.presets["stow"])
+        self.arm_mode = arm
+        self.arm_goal = np.array(self.presets[arm])
+        self.arm_now = np.array(self.presets[arm])
         self.finger_goal = self.finger_now = GRIPPER_OPEN
         self.obs = self.wrapped.get_observations()
         self.time = 0.0
         self._camera_size = camera_size
         self._render = None
+        self._video = None
         from oceanking.demo.scene import TRASH
 
         self.trash = [t.name for t in TRASH]
@@ -145,6 +152,9 @@ class OceanSim:
                 actions = self.policy(self.obs)
             self.obs, _, _, _ = self.wrapped.step(actions)
             self.time += self.step_dt
+            if self._video is not None and self.time >= self._next_frame:
+                self._next_frame += 1.0 / self._video_fps
+                self._video_frame()
         self._render_dirty = True
 
     def walk(self, vx: float, vy: float, wz: float, seconds: float) -> None:
@@ -206,6 +216,56 @@ class OceanSim:
         self._seg.update_scene(data, camera=CAMERA)
         ids = self._seg.render()[..., 0]
         return np.isin(ids, self._robot_geoms)
+
+    def record(self, path: str, fps: float = 15.0, size=(960, 540), distance: float = 1.6,
+               elevation: float = -30.0, azimuth: float = 210.0, inset: bool = True) -> None:
+        """Record an external view following the robot to `path` (MP4), with the
+        onboard camera inset in the corner, until `stop_recording`."""
+        import imageio.v2 as iio
+        import mujoco
+
+        sim = self.env.sim
+        model = getattr(sim, "render_model", sim.mj_model)
+        w, h = size
+        model.vis.global_.offwidth = max(model.vis.global_.offwidth, w)
+        model.vis.global_.offheight = max(model.vis.global_.offheight, h)
+        self._video = iio.get_writer(path, fps=fps, macro_block_size=1)
+        self._video_fps = fps
+        self._next_frame = self.time
+        self._video_r = mujoco.Renderer(model, height=h, width=w)
+        self._video_cam = mujoco.MjvCamera()
+        self._video_cam.distance, self._video_cam.elevation = distance, elevation
+        self._video_cam.azimuth = azimuth
+        self._video_inset = inset
+        self.caption = ""
+
+    def _video_frame(self) -> None:
+        from PIL import Image, ImageDraw
+
+        if self._render is None:
+            self.camera()
+        _, data = self._render
+        model = getattr(self.env.sim, "render_model", self.env.sim.mj_model)
+        data.qpos[:] = self.env.sim.data.qpos[0].cpu().numpy()[: model.nq]
+        import mujoco
+
+        mujoco.mj_forward(model, data)
+        x, y, _ = self.pose()
+        self._video_cam.lookat[:] = [x, y, 0.08]
+        self._video_r.update_scene(data, self._video_cam)
+        frame = Image.fromarray(self._video_r.render())
+        if self._video_inset:
+            onboard = Image.fromarray(self.camera()).resize((256, 192))
+            frame.paste(onboard, (frame.width - 266, 10))
+        draw = ImageDraw.Draw(frame)
+        draw.text((12, 10), f"t={self.time:5.1f}s  {self.caption}", fill=(255, 255, 255))
+        self._video.append_data(np.asarray(frame))
+
+    def stop_recording(self) -> None:
+        if self._video is not None:
+            self._video.close()
+            self._video_r.close()
+            self._video = None
 
     def camera_fov(self) -> tuple[float, float]:
         """(horizontal, vertical) field of view of the rendered image, radians."""
@@ -271,6 +331,7 @@ class OceanSim:
         return None
 
     def close(self) -> None:
+        self.stop_recording()
         if self._render is not None:
             self._render[0].close()
         if getattr(self, "_seg", None) is not None:
