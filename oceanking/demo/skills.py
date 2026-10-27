@@ -47,6 +47,8 @@ STANDOFF = 0.09
 #: Mouth-on-target tolerance, m (the jaws are 75 mm apart at the tips, the trash
 #: 48-52 mm across).
 TOLERANCE = 0.012
+#: How far inside the mouth the trash is brought, m.
+GRIP_DEPTH = 0.015
 #: The finger closes to `GRIPPER_CLOSED` (0.10 rad) on nothing; on a 50 mm object
 #: it stops well short (measured: about -0.3 rad).
 HOLD_MARGIN = 0.15
@@ -60,6 +62,16 @@ class Log:
         self.lines.append(msg)
 
 
+#: Pulse length for a distance, s, measured for the arm-out policy at 0.15 m/s from
+#: standing (2026-10-27): 0.2 s -> 11 mm, 0.3 s -> 20 mm, 0.5 s -> 55 mm.
+_PULSE_D = (0.0, 0.011, 0.020, 0.055)
+_PULSE_T = (0.12, 0.20, 0.30, 0.50)
+
+
+def _pulse(distance: float) -> float:
+    return float(np.interp(distance, _PULSE_D, _PULSE_T))
+
+
 def _wrap(a: float) -> float:
     return math.atan2(math.sin(a), math.cos(a))
 
@@ -70,6 +82,8 @@ class Skills:
         self.log = Log()
         self.verbose = verbose
         self.targets: dict[str, tuple[float, float]] = {}  # last ground fix per label
+        self.held: str | None = None  # what the last successful grasp picked up
+        self._approached: str | None = None
         self._whole: dict[str, bool] = {}
         self.mouth_offset = self._calibrate_mouth()
 
@@ -111,8 +125,8 @@ class Skills:
         # hidden at its bottom is kept only when there is no better fix yet.
         seen = set()
         for d in sorted(dets, key=lambda d: (not d.whole, -d.pixels)):
-            if d.ground is None or d.label in seen:
-                continue
+            if d.ground is None or d.label in seen or d.label == self.held:
+                continue  # (what the claw holds is in view, and is not on the floor)
             if d.whole or d.label not in self.targets or not self._whole.get(d.label, False):
                 self.targets[d.label] = d.ground
                 self._whole[d.label] = d.whole
@@ -181,22 +195,35 @@ class Skills:
                 break
             heading = math.atan2(t[1], t[0])
             if far:
-                # Walk and turn at once, continuously: a turn needs ~0.5 s to start.
-                wz = 0.0
-                if abs(heading) > math.radians(15):
-                    wz = math.copysign(MIN_TURN if abs(heading) < math.radians(40) else MAX_TURN,
-                                       heading)
-                v = MAX_SPEED * e / err
-                self.sim.walk(float(v[0]), float(v[1]), wz, PERIOD)
+                # Face it first (turning in place, continuously: a turn needs ~0.5 s
+                # to start), then walk forward with a sideways trim. A diagonal or
+                # backward command while turning barely moves the arm-out gait with
+                # a load (200 s for 0 m towards the drop zone, 2026-10-27).
+                if abs(heading) > math.radians(25):
+                    self.sim.walk(0.0, 0.0, math.copysign(MAX_TURN, heading), PERIOD)
+                    continue
+                wz = math.copysign(MIN_TURN, heading) if abs(heading) > math.radians(10) else 0.0
+                vy = float(np.clip(2.5 * e[1], -0.07, 0.07))
+                self.sim.walk(MAX_SPEED, vy, wz, PERIOD)
             else:
                 # One axis at a time at exactly the walking speed: a diagonal or a
                 # slow command sits in the standing band and does not move at all
-                # (an approach stalled for 17 s on (0.13, -0.08), 2026-10-27).
-                # A pulse includes ~0.15 s for the gait to start.
-                k = int(np.argmax(np.abs(e)))
+                # (an approach stalled for 17 s on (0.13, -0.08), 2026-10-27). A
+                # pulse includes ~0.15 s for the gait to start.
+                # Line up sideways only while still well short: an open jaw moving
+                # sideways next to the trash knocks it over. Once close, go
+                # straight in; if it has drifted sideways there, back off.
+                if abs(e[1]) > tol and e[0] > 0.05:
+                    k, d = 1, e[1]
+                elif e[0] > tol:
+                    k, d = 0, e[0]
+                elif abs(e[1]) > tol:
+                    k, d = 0, -0.06
+                else:
+                    k, d = 0, e[0]
                 v = [0.0, 0.0]
-                v[k] = math.copysign(MIN_SPEED, e[k])
-                self.sim.walk(v[0], v[1], 0.0, float(np.clip(abs(e[k]) / 0.11 + 0.15, 0.2, 0.6)))
+                v[k] = math.copysign(MIN_SPEED, d)
+                self.sim.walk(v[0], v[1], 0.0, float(np.clip(abs(d) / 0.11 + 0.15, 0.2, 0.6)))
                 self.sim.stand(0.3)
         self.sim.stand(0.3)
         return err
@@ -213,11 +240,9 @@ class Skills:
         if label not in self.targets:
             return f"cannot approach {label}: not in view. Look around first."
         self.sim.claw(closed=False, settle=0.2)
+        self._approached = label
         if self.carry_pose == "reach":
-            # Line up 8 cm short of it, then come straight in along the jaws.
-            self._servo(label, self.mouth_offset - np.array([0.08, 0.0]), 0.02, timeout=60.0,
-                        track=True)
-            err = self._servo(label, self.mouth_offset, TOLERANCE, timeout=20.0, track=False)
+            err = self._approach_open(label)
         else:
             self.sim.arm("stow", settle=0.2)
             short = self.mouth_offset + np.array([STANDOFF, 0.0])
@@ -228,11 +253,69 @@ class Skills:
         self._say(msg)
         return msg
 
+    def _approach_open(self, label: str, timeout: float = 90.0) -> float:
+        """The arm-out policy's approach: walk the open claw in along its jaws.
+
+        Far, `_servo` (full speed, facing it, re-detecting). Then a continuous walk
+        forward with a sideways component that lines the mouth up on the way in
+        -- sideways pulses from standing do not move this gait at all (0 mm from
+        0.4 s pulses, 2026-10-27), while a sideways component on a moving gait
+        does -- stopping 4 cm short; forward pulses for the rest; and the last
+        sideways centimetres by the arm (`arm_ik`), standing."""
+        from oceanking.demo.arm_ik import ArmIK
+
+        t_end = self.sim.time + timeout
+        # Aim the trash 1.5 cm deeper than the mouth: the jaws hold best inside
+        # their tips, and the fix runs ~1.4 cm short at the end (a can 2.2 cm
+        # ahead of the mouth slipped out of the closing tips, 2026-10-27).
+        aim = self.mouth_offset - np.array([GRIP_DEPTH, 0.0])
+        while self.sim.time < t_end:
+            t = self.to_base(self.targets[label])
+            if np.linalg.norm(t) > 0.45:  # far enough to see it whole: refresh the fix
+                self.detections()
+                t = self.to_base(self.targets[label])
+            e = t - aim
+            if e[0] <= 0.06:
+                break
+            heading = math.atan2(t[1], t[0])
+            wz = 0.0
+            if np.linalg.norm(t) > 0.5 and abs(heading) > math.radians(15):
+                wz = math.copysign(MIN_TURN if abs(heading) < math.radians(40) else MAX_TURN,
+                                   heading)
+            vy = float(np.clip(2.5 * e[1], -0.07, 0.07))
+            self.sim.walk(MAX_SPEED, vy, wz, PERIOD)
+        self.sim.stand(0.4)
+        for _ in range(8):
+            e = self.to_base(self.targets[label]) - aim
+            if -0.012 <= e[0] <= 0.012 or self.sim.time > t_end:
+                break
+            self.sim.walk(math.copysign(MIN_SPEED, e[0]), 0.0, 0.0, _pulse(abs(e[0])))
+            self.sim.stand(0.3)
+        e = self.to_base(self.targets[label]) - aim
+        if 0.006 < abs(e[1]) <= 0.035:
+            if not hasattr(self, "_ik"):
+                self._ik = ArmIK()
+            q, _ = self._ik.move(self.sim.presets["reach"], (0.0, float(e[1]), 0.0),
+                                 weights=(1.0, 1.0, 0.3))
+            self.sim.presets["aim"] = tuple(float(v) for v in q)
+            self.sim.arm("aim", settle=0.4)
+            e = e - np.array([0.0, e[1]])
+        return float(np.linalg.norm(e))
+
     def grasp(self) -> str:
         self.sim.claw(closed=True, settle=1.0)
-        self.sim.arm("lift", settle=0.6)
+        # Lift from wherever the arm is aimed. With the arm-out policy only by the
+        # 0.1 rad it was trained to walk with (the full 0.7 rad lift left it unable
+        # to walk: 100 s in place, 2026-10-27): the trash comes ~6 mm off the floor
+        # and rides in the claw (carried 5 s walking and turning with under 15 mm
+        # of slip). The stowed policy does not walk with the arm out anyway.
+        raise_by = 0.1 if self.carry_pose == "reach" else 0.7
+        lift = np.array(self.sim.arm_goal) + np.array([0.0, -raise_by, 0.0, 0.0])
+        self.sim.presets["lift_now"] = tuple(float(v) for v in lift)
+        self.sim.arm("lift_now", settle=0.6)
         finger = float(self.sim.robot.data.joint_pos[0, self.sim._finger_id])
         held = finger < self.sim.gripper_closed - HOLD_MARGIN
+        self.held = self._approached if held else None
         msg = (f"holding something (claw stopped at {finger:+.2f} rad)" if held else
                f"nothing in the claw (closed to {finger:+.2f} rad)")
         self._say(msg)
@@ -242,6 +325,9 @@ class Skills:
         self.sim.arm("reach", settle=0.3)
         self.sim.claw(closed=False, settle=1.0)
         self.sim.arm(self.carry_pose, settle=0.3)
+        if self.held:
+            self.targets.pop(self.held, None)  # it is somewhere new now
+        self.held = None
         self._say("released")
         return "claw opened and arm stowed"
 
@@ -249,11 +335,22 @@ class Skills:
         return self.walk(metres, "back")
 
     def go_to(self, label: str) -> str:
-        """Bring the claw's mouth over `label` (the drop zone) holding what it holds."""
+        """Bring the claw's mouth over `label` (the drop zone), holding what it holds.
+        Seen without a distance (its foot hidden), walk 0.3 m towards its bearing
+        and look again, up to five times."""
+        for _ in range(5):
+            if label in self.targets:
+                break
+            dets = [d for d in self.detections() if d.label == label]
+            if label in self.targets:
+                break
+            if not dets or dets[0].bearing is None:
+                return f"cannot go to {label}: not in view. Look around first."
+            if abs(dets[0].bearing) > 10:
+                self.turn(dets[0].bearing)
+            self.walk(0.3, "forward")
         if label not in self.targets:
-            self.detections()
-        if label not in self.targets:
-            return f"cannot go to {label}: not in view. Look around first."
+            return f"cannot go to {label}: it stays without a distance; get closer."
         err = self._servo(label, self.mouth_offset, 0.04, timeout=90.0, track=True)
         msg = f"claw over {label}, {err * 100:.0f} cm off its last seen position"
         self._say(msg)
@@ -262,7 +359,8 @@ class Skills:
     def status(self) -> str:
         x, y, yaw = self.sim.pose()
         finger = float(self.sim.robot.data.joint_pos[0, self.sim._finger_id])
-        return (f"time {self.sim.time:.1f} s; odometry x {x:+.2f} m, y {y:+.2f} m, heading "
+        held = f"; holding the {self.held}" if self.held else ""
+        return (f"time {self.sim.time:.1f} s{held}; odometry x {x:+.2f} m, y {y:+.2f} m, heading "
                 f"{math.degrees(yaw):+.0f} deg; claw at {finger:+.2f} rad "
                 f"({'closed' if self.sim.finger_goal > 0 else 'open'}); known fixes: "
                 + ", ".join(f"{k} at ({v[0]:+.2f}, {v[1]:+.2f})" for k, v in self.targets.items()))

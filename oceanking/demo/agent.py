@@ -245,15 +245,20 @@ def main() -> None:
     ap.add_argument("--transcript", default=None, help="write the transcript (JSON) here")
     ap.add_argument("--max-turns", type=int, default=60)
     ap.add_argument("--effort", default="medium", choices=("low", "medium", "high", "xhigh"))
-    ap.add_argument("--checkpoint", default=None, help="five-foot policy (default: arm-out)")
+    ap.add_argument("--checkpoint", default=None,
+                    help="five-foot policy (default: the arm-out one if trained, else official)")
+    ap.add_argument("--arm", default=None, choices=("stow", "reach"),
+                    help="the arm the policy walks with (default: from the checkpoint)")
     ap.add_argument("--dry-run", action="store_true",
                     help="no API: a scripted stand-in fetches the can")
     args = ap.parse_args()
 
-    from oceanking.demo.sim import OceanSim
+    from oceanking.demo.sim import CHECKPOINT, CHECKPOINT_REACH, OceanSim
     from oceanking.demo.skills import Skills
 
-    sim = OceanSim(**({"checkpoint": args.checkpoint} if args.checkpoint else {}))
+    checkpoint = args.checkpoint or (CHECKPOINT_REACH if CHECKPOINT_REACH.exists() else CHECKPOINT)
+    arm = args.arm or ("reach" if "reach" in str(checkpoint) else "stow")
+    sim = OceanSim(checkpoint=checkpoint, arm=arm)
     skills = Skills(sim, verbose=True)
     if args.video:
         sim.record(args.video)

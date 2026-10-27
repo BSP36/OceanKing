@@ -174,3 +174,35 @@ as training latches it, not the episode's last position: the official policy shu
 after its jump at beta 0.8, which an earlier version of this tool counted as the jump) and error,
 movement after landing, rise, airtime, falls;
 official (expanded) policy against candidates.
+
+## 7. The long jump: the crown tank (2026-10-27)
+
+The aimed jump not being learnt, travel comes from the water: the jump lifts the robot off, the
+crown's ballast tank holds it up, a current carries it, and flooding the tank brings it down.
+
+**The tank, while the simulation runs** (`oceanking/tank.py::CrownTank`, a step event): a pump moves
+the crown's water towards a target air fraction at a fixed rate (`TANK_RATE`, a full tank in 2 s);
+each change rewrites the crown body's mass, centre of mass (the water settles at the tank floor) and
+inertia, and the observed beta (so the jump policy, which observes beta, sees the tank's effect).
+Tested: after ~1 s of pumping the crown holds the water of half a tank and the observed beta equals
+the kit's `Ballast.beta_at` for that fraction (`tests/test_tank.py`).
+
+**The submarine kit** (`SUBMARINE`, for `--tank-script`): the keel sized for beta 1.02 with the tank
+blown, so beta goes 0.86 (flooded) to 1.02 (blown); 0.875 air is about neutral.
+
+**The schedule** (`oceanking/tasks/ocean/jump/tank_hover.py`): blow while the legs push (0-0.6 s),
+hold the base 0.30 m off the ground with the tank (PI on height, D on vertical speed, around
+neutral), flood at 8 s.
+
+```bash
+cd jumper
+../.venv/bin/python scripts/play.py --task ocean.jump --scene seabed \
+    --checkpoint ../oceanking/tasks/ocean/jump/out/run5/model_11000.pt \
+    --jump 0 0 --nominal --current 0.15 0 --episode-s 16 \
+    --tank-script ../oceanking/tasks/ocean/jump/tank_hover.py
+```
+
+Measured (native, run 5's straight-up jump, current 0.15 m/s along x): it rises to ~0.40 m, settles
+at 0.27-0.30 m, is carried at the current's speed, and lands upright at **1.8 m** from its take-off
+point 11 s in (without the tank: ~0). Blowing the tank without the hold took it to 1.1 m. After
+landing the current keeps pushing it at 0.15 m/s: the jump policy was trained without current.

@@ -53,7 +53,9 @@ class Detection:
 
     def describe(self) -> str:
         if self.distance is None:
-            return f"{self.label}: seen at image box {self.box}, distance unknown"
+            where = "" if self.bearing is None else (
+                f", {abs(self.bearing):.0f} deg to the {'left' if self.bearing >= 0 else 'right'}")
+            return f"{self.label}: seen{where}, distance unknown (its foot is not in view)"
         side = "left" if self.bearing >= 0 else "right"
         note = "" if self.whole else " (partly hidden: distance approximate)"
         return (f"{self.label}: {self.distance:.2f} m away, {abs(self.bearing):.0f} deg to the "
@@ -137,6 +139,14 @@ def detect(rgb: np.ndarray, fovy: float | None = None, cam_pos=None, cam_mat=Non
             dist = bearing = ground = None
             if fovy is not None and cam_pos is not None and robot_pose is not None:
                 g = ground_point((u0 + u1) / 2, v1 - 0.5, (W, H), fovy, cam_pos, cam_mat)
+                if g is None:
+                    # Above the horizon (a pole's top, with its foot hidden): no
+                    # distance, but the bearing of the ray still says where it is.
+                    w_, h_ = W, H
+                    f = (h_ / 2) / math.tan(fovy / 2)
+                    ray = cam_mat @ np.array([((u0 + u1) / 2 - w_ / 2) / f, 0.0, -1.0])
+                    rel = math.atan2(ray[1], ray[0]) - robot_pose[2]
+                    bearing = math.degrees(math.atan2(math.sin(rel), math.cos(rel)))
                 if g is not None:
                     x, y, yaw = robot_pose
                     dx, dy = g[0] - x, g[1] - y
