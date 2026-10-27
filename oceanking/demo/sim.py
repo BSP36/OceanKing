@@ -323,10 +323,11 @@ class OceanSim:
         return tips + self.MOUTH_DEPTH * inward / max(np.linalg.norm(inward), 1e-9)
 
     def holding(self) -> str | None:
-        """The trash whose centre is within 6 cm of the mouth and off the floor."""
+        """The trash within 4 cm of the mouth (horizontally) and off the floor (the
+        arm-out policy carries it only ~6 mm up)."""
         m = self.mouth()
         for name, p in self.positions().items():
-            if np.linalg.norm(p[:2] - m[:2]) < 0.06 and p[2] > self._rest_z[name] + 0.015:
+            if np.linalg.norm(p[:2] - m[:2]) < 0.04 and p[2] > self._rest_z[name] + 0.003:
                 return name
         return None
 

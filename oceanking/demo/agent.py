@@ -250,7 +250,9 @@ def main() -> None:
     ap.add_argument("--arm", default=None, choices=("stow", "reach"),
                     help="the arm the policy walks with (default: from the checkpoint)")
     ap.add_argument("--dry-run", action="store_true",
-                    help="no API: a scripted stand-in fetches the can")
+                    help="no API: a scripted stand-in fetches one piece (--fetch)")
+    ap.add_argument("--fetch", default="can", choices=("can", "bottle", "carton"),
+                    help="what --dry-run's stand-in fetches")
     args = ap.parse_args()
 
     from oceanking.demo.sim import CHECKPOINT, CHECKPOINT_REACH, OceanSim
@@ -263,7 +265,7 @@ def main() -> None:
     if args.video:
         sim.record(args.video)
     if args.dry_run:
-        client = ScriptedClient(DEMO_SCRIPT)
+        client = ScriptedClient(demo_script(args.fetch))
     else:
         import anthropic
 
@@ -284,12 +286,12 @@ def main() -> None:
             json.dump(result, f, indent=2, default=str)
 
 
-#: What a scripted stand-in does with `--dry-run`: fetch the can.
-DEMO_SCRIPT: list[tuple[str, dict]] = [
-    ("look", {}), ("approach", {"label": "can"}), ("grasp", {}),
-    ("turn", {"degrees": 90}), ("look", {}), ("go_to", {"label": "drop_zone"}),
-    ("release", {}), ("status", {}),
-]
+def demo_script(label: str = "can") -> list[tuple[str, dict]]:
+    """What a scripted stand-in does with `--dry-run`: fetch `label` to the zone (the
+    zone lies to the robot's left of every piece's position)."""
+    return [("look", {}), ("approach", {"label": label}), ("grasp", {}),
+            ("turn", {"degrees": 100}), ("look", {}), ("go_to", {"label": "drop_zone"}),
+            ("release", {}), ("status", {})]
 
 
 if __name__ == "__main__":
