@@ -54,7 +54,7 @@ class OceanSim:
     def __init__(self, checkpoint: Path | str = CHECKPOINT, *, beta: float = 0.8,
                  current: tuple[float, float] = (0.0, 0.0), scene: str = "seabed",
                  camera_size: tuple[int, int] = (640, 480), presets: dict | None = None,
-                 arm: str = "stow"):
+                 arm: str = "stow", layout: str = "full"):
         import torch
         from mjrl.backend import resolve
         from mjrl.backend.select import use_backend
@@ -71,7 +71,7 @@ class OceanSim:
         import scenes
 
         cfg = tasks.load_env_cfg("ocean.five_foot", play=True, task_args={
-            "buoyancy_ratio": beta, "current": list(current), "demo_scene": True, "arm": arm})
+            "buoyancy_ratio": beta, "current": list(current), "demo_scene": layout, "arm": arm})
         if scene:
             scenes.apply(cfg, scene)
         cfg.scene.num_envs = 1
@@ -104,10 +104,12 @@ class OceanSim:
         self._camera_size = camera_size
         self._render = None
         self._video = None
-        from oceanking.demo.scene import TRASH
+        from oceanking.demo.scene import LAYOUTS, TRASH
 
-        self.trash = [t.name for t in TRASH]
-        self._rest_z = {t.name: t.half_height for t in TRASH}
+        self.layout = layout
+        self.zone = LAYOUTS[layout]["zone"]
+        self.trash = [t.name for t in TRASH if t.name in LAYOUTS[layout]["trash"]]
+        self._rest_z = {t.name: t.half_height for t in TRASH if t.name in self.trash}
 
     # ── commands ────────────────────────────────────────────────────────────
 

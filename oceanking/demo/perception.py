@@ -28,14 +28,14 @@ import numpy as np
 #: 356-359 sat 0.64-0.87 value 0.21-0.29; bottle 141-159, 0.60-0.90, 0.20-0.33;
 #: carton 72, 0.93, 0.22.
 CLASSES: dict[str, tuple[tuple[float, float], float, float]] = {
-    "can": ((-15.0, 8.0), 0.55, 0.10),        # red
-    "bottle": ((115.0, 170.0), 0.50, 0.10),   # green
+    "red_bottle": ((-15.0, 8.0), 0.55, 0.10),     # red
+    "green_bottle": ((115.0, 170.0), 0.50, 0.10),  # green
     "carton": ((55.0, 90.0), 0.75, 0.10),     # yellow
     "drop_zone": ((262.0, 330.0), 0.50, 0.10),  # magenta: 268-283 in the water light
 }
 MIN_PIXELS = 12
 #: A red blob this many times taller than wide is one of the scene's stakes, not
-#: the can (only red is shared with them; the 40 mm bottle is 4 times as tall).
+#: the red bottle (only red is shared with them).
 MAX_ASPECT = 5.0
 
 
@@ -126,7 +126,7 @@ def detect(rgb: np.ndarray, fovy: float | None = None, cam_pos=None, cam_mat=Non
                 continue
             v0, v1 = sl[0].start, sl[0].stop
             u0, u1 = sl[1].start, sl[1].stop
-            if label == "can" and (v1 - v0) > MAX_ASPECT * (u1 - u0):
+            if label == "red_bottle" and (v1 - v0) > MAX_ASPECT * (u1 - u0):
                 continue  # a pole, not trash
             border = not (v1 < H - 2 and u0 > 1 and u1 < W - 1)
             hidden = False

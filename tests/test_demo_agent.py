@@ -39,17 +39,17 @@ def test_detector_finds_the_trash_where_it_lies_and_not_the_robot(skills):
     # The carton sits at the image's edge from the spawn: cut there, its fix is not
     # trusted (`whole` False), which is the point of the flag.
     assert not any(d.label == "carton" and d.whole for d in dets)
-    # The bottle is in plain view: its fix is within 10 cm. The can stands behind
+    # The green bottle is in plain view: its fix is within 10 cm. The red bottle stands behind
     # the stowed claw from here, which hides its foot: it is reported, flagged
     # approximate, not trusted.
-    assert "bottle" in found, f"bottle not detected: {[d.describe() for d in dets]}"
-    assert np.hypot(*(np.array(found["bottle"].ground) - truth["bottle"][:2])) < 0.10
-    assert any(d.label == "can" for d in dets)
+    assert "green_bottle" in found, f"bottle not detected: {[d.describe() for d in dets]}"
+    assert np.hypot(*(np.array(found["green_bottle"].ground) - truth["green_bottle"][:2])) < 0.10
+    assert any(d.label == "red_bottle" for d in dets)
     img = sim.camera()
     pos, mat = sim.camera_pose()
     unmasked = detect(img, sim.camera_fov()[1], pos, mat, sim.pose())
-    assert max(d.pixels for d in unmasked if d.label == "can") > 5 * max(
-        (d.pixels for d in dets if d.label == "can"), default=1), "the self-mask did nothing"
+    assert max(d.pixels for d in unmasked if d.label == "red_bottle") > 5 * max(
+        (d.pixels for d in dets if d.label == "red_bottle"), default=1), "the self-mask did nothing"
 
 
 def test_turn_turns(skills):

@@ -93,25 +93,29 @@ def load_key(env_file: Path | None = None) -> None:
             return
 
 SYSTEM = """You are the onboard controller of OceanKing, a six-legged crab robot walking on \
-the seabed. Its left front leg is carried as a claw. Your mission: collect the sunken \
-trash (a red can, a green bottle, a yellow carton) one piece at a time and bring each to \
-the drop zone, a magenta disk with a magenta pole and flag, then call finish.
+the seabed. Its left front leg is carried as a claw, held out in front, open. Your mission: \
+collect the sunken trash you can find (a red bottle, a green bottle, a yellow carton) one \
+piece at a \
+time and bring each to the drop zone, a magenta disk with a magenta pole and flag; then call \
+finish.
 
-What you can sense: `look` returns the onboard camera image (a fisheye-like 96 degree view \
-from the robot's front; the robot's own red body and claw appear at the bottom) and a \
-detector's list of what it recognised, with ground distance and bearing. Your odometry and \
-claw state come from `status`. You do not know where anything is until you have seen it.
+What you can sense: `look` returns the onboard camera image (a 96 degree view from the \
+robot's front; the robot's own red body and claw appear at the bottom) and a detector's list \
+of what it recognised, with ground distance and bearing (positive is to the left). A \
+detection marked "partly hidden" has an approximate distance. Your odometry and the claw \
+state come from `status`. You do not know where anything is until you have seen it.
 
 How to work:
-- Look first. If a target is not in view, turn (e.g. 60 degrees) and look again.
-- `approach` a detected piece of trash to put the open claw on it, then `grasp`. If grasp \
-reports nothing in the claw, `release`, step back with `walk` (0.15 m back), look and try \
-again.
-- With trash in the claw, find the drop zone (look/turn), `go_to` it, then `release`.
-- The robot walks slowly (about 0.12 m/s). Prefer few, purposeful actions; check with \
-`look` after moves that may have changed the view.
-- Call `finish` when all trash you can find is in the zone, or if you are stuck after \
-several attempts, with a one-line report."""
+- Look first. If what you need is not in view, turn (about 60 degrees) and look again.
+- `approach` a piece of trash the detector has seen, then `grasp`. The claw is fragile \
+business: a piece can be knocked over or missed. If grasp reports nothing in the claw, \
+`release`, `walk` 0.2 m back, `look`, and try the same piece again (a knocked-over piece may \
+no longer be graspable: then move on to another).
+- With a piece in the claw, find the drop zone (look/turn), `go_to` it, then `release`.
+- Tool results warn you when the claw has dropped what it held: look for the piece again.
+- The robot walks slowly (about 0.15 m/s): prefer few, purposeful actions.
+- Call `finish` when the trash you can reach is in the zone, or after about five failed \
+attempts in total, with a one-line report."""
 
 TOOLS: list[dict[str, Any]] = [
     {"name": "look", "description": "Capture the onboard camera image and run the trash/"
@@ -131,7 +135,7 @@ TOOLS: list[dict[str, Any]] = [
     {"name": "approach", "description": "Walk to a piece of trash the detector has seen and "
      "put the open claw on it. Uses the last detection, re-detecting on the way.",
      "input_schema": {"type": "object", "properties": {
-         "label": {"type": "string", "enum": ["can", "bottle", "carton"]}},
+         "label": {"type": "string", "enum": ["red_bottle", "green_bottle", "carton"]}},
          "required": ["label"], "additionalProperties": False}},
     {"name": "grasp", "description": "Close the claw and lift. Reports whether something is "
      "held (from how far the claw closed).",
@@ -301,11 +305,12 @@ class ScriptedClient:
 
 def score(sim) -> dict:
     """Ground truth after a run: where each piece of trash is relative to the zone."""
-    from oceanking.demo.scene import DROP_RADIUS, DROP_ZONE
+    from oceanking.demo.scene import DROP_RADIUS
 
     out = {}
+    zx, zy = sim.zone
     for name, p in sim.positions().items():
-        d = math.hypot(p[0] - DROP_ZONE[0], p[1] - DROP_ZONE[1])
+        d = math.hypot(p[0] - zx, p[1] - zy)
         out[name] = {"distance_to_zone_m": round(d, 3), "in_zone": d <= DROP_RADIUS + 0.03}
     return out
 
@@ -315,6 +320,8 @@ def main() -> None:
     ap.add_argument("--video", default=None, help="record an MP4 of the run here")
     ap.add_argument("--transcript", default=None, help="write the transcript (JSON) here")
     ap.add_argument("--max-turns", type=int, default=60)
+    ap.add_argument("--layout", default="showcase", choices=("showcase", "full"),
+                    help="the scene: two pieces in front (showcase, default) or all three")
     ap.add_argument("--budget-usd", type=float, default=5.0,
                     help="stop the run when its estimated spend passes this (default 5)")
     ap.add_argument("--effort", default="medium", choices=("low", "medium", "high", "xhigh"))
@@ -324,7 +331,8 @@ def main() -> None:
                     help="the arm the policy walks with (default: from the checkpoint)")
     ap.add_argument("--dry-run", action="store_true",
                     help="no API: a scripted stand-in fetches one piece (--fetch)")
-    ap.add_argument("--fetch", default="can", choices=("can", "bottle", "carton"),
+    ap.add_argument("--fetch", default="red_bottle",
+                    choices=("red_bottle", "green_bottle", "carton"),
                     help="what --dry-run's stand-in fetches")
     args = ap.parse_args()
 
@@ -333,7 +341,7 @@ def main() -> None:
 
     checkpoint = args.checkpoint or (CHECKPOINT_REACH if CHECKPOINT_REACH.exists() else CHECKPOINT)
     arm = args.arm or ("reach" if "reach" in str(checkpoint) else "stow")
-    sim = OceanSim(checkpoint=checkpoint, arm=arm)
+    sim = OceanSim(checkpoint=checkpoint, arm=arm, layout=args.layout)
     skills = Skills(sim, verbose=True)
     if args.video:
         sim.record(args.video)
@@ -370,7 +378,7 @@ def main() -> None:
             json.dump(result, f, indent=2, default=str)
 
 
-def demo_script(label: str = "can") -> list[tuple[str, dict]]:
+def demo_script(label: str = "red_bottle") -> list[tuple[str, dict]]:
     """What a scripted stand-in does with `--dry-run`: fetch `label` to the zone (the
     zone lies to the robot's left of every piece's position)."""
     return [("look", {}), ("approach", {"label": label}), ("grasp", {}),

@@ -107,6 +107,23 @@ class Skills:
         self.sim.arm(self.carry_pose, settle=0.3)
         return offset
 
+    # ── the claw, as its encoder tells it ─────────────────────────────────
+
+    def claw_closed_on_something(self) -> bool:
+        finger = float(self.sim.robot.data.joint_pos[0, self.sim._finger_id])
+        return self.sim.finger_goal > 0 and finger < self.sim.gripper_closed - HOLD_MARGIN
+
+    def _check_drop(self, msg: str) -> str:
+        """Append a warning if what the claw held is no longer in it."""
+        if self.held and not self.claw_closed_on_something():
+            dropped = self.held
+            self.held = None
+            self.targets.pop(dropped, None)
+            self._say(f"dropped the {dropped}")
+            return (msg + f". WARNING: the claw has closed on nothing -- the {dropped} was "
+                    "dropped on the way; look for it again")
+        return msg
+
     # ── frames ──────────────────────────────────────────────────────────────
 
     def to_base(self, xy) -> np.ndarray:
@@ -151,12 +168,15 @@ class Skills:
             err = _wrap(goal - self.sim.pose()[2])
             if abs(err) < math.radians(6):
                 break
-            wz = math.copysign(MAX_TURN if abs(err) > math.radians(25) else MIN_TURN, err)
+            # Slowly with a piece in the claw: a full-speed turn swung one out (run 1
+            # with Claude, 2026-10-28).
+            fast = abs(err) > math.radians(25) and not self.held
+            wz = math.copysign(MAX_TURN if fast else MIN_TURN, err)
             self.sim.walk(0.0, 0.0, wz, PERIOD / 2)
         self.sim.stand(0.4)
         turned = math.degrees(_wrap(self.sim.pose()[2] - start))
         self._say(f"turned {turned:+.0f} deg")
-        return f"turned {turned:+.0f} deg"
+        return self._check_drop(f"turned {turned:+.0f} deg")
 
     def walk(self, metres: float, direction: str = "forward") -> str:
         dirs = {"forward": (1, 0), "back": (-1, 0), "left": (0, 1), "right": (0, -1)}
@@ -173,7 +193,7 @@ class Skills:
         x, y, _ = self.sim.pose()
         msg = f"walked {math.hypot(x - x0, y - y0):.2f} m {direction}"
         self._say(msg)
-        return msg
+        return self._check_drop(msg)
 
     def _servo(self, label: str, offset: np.ndarray, tol: float, timeout: float,
                track: bool, track_near: bool = False) -> float:
@@ -368,12 +388,19 @@ class Skills:
                           track_near=True)
         msg = f"claw over {label}, {err * 100:.0f} cm off its last seen position"
         self._say(msg)
+        if self.held:
+            msg = self._check_drop(msg + f", holding the {self.held}")
         return msg
 
     def status(self) -> str:
         x, y, yaw = self.sim.pose()
         finger = float(self.sim.robot.data.joint_pos[0, self.sim._finger_id])
-        held = f"; holding the {self.held}" if self.held else ""
+        if self.held and self.claw_closed_on_something():
+            held = f"; holding the {self.held}"
+        elif self.sim.finger_goal > 0:
+            held = "; claw closed on nothing"
+        else:
+            held = "; claw open and empty"
         return (f"time {self.sim.time:.1f} s{held}; odometry x {x:+.2f} m, y {y:+.2f} m, heading "
                 f"{math.degrees(yaw):+.0f} deg; claw at {finger:+.2f} rad "
                 f"({'closed' if self.sim.finger_goal > 0 else 'open'}); known fixes: "

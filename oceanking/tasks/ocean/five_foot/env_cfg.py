@@ -53,7 +53,7 @@ def env_cfg(
     buoyancy_ratio: float = 0.8,
     current: tuple[float, float] = (0.0, 0.0),
     trajectory_out: str | None = None,
-    demo_scene: bool = False,
+    demo_scene: bool | str = False,
     arm: str = "stow",
 ) -> ManagerBasedRlEnvCfg:
     cfg = base_env_cfg(asset=asset, play=play, objects=objects, hold=hold)
@@ -76,7 +76,7 @@ def env_cfg(
             raise ValueError("--demo-scene is for replays and the demo agent")
         from oceanking.demo.scene import add_demo_scene
 
-        add_demo_scene(cfg, hydro)
+        add_demo_scene(cfg, hydro, demo_scene if isinstance(demo_scene, str) else "full")
     print(f"[oceanking] ocean.five_foot {hydro.describe()}")
     if trajectory_out:
         add_trajectory(cfg, play, trajectory_out, {
