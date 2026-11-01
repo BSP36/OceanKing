@@ -362,6 +362,9 @@ def main() -> None:
     ap.add_argument("--video", default=None, help="record an MP4 of the run here")
     ap.add_argument("--transcript", default=None, help="write the transcript (JSON) here")
     ap.add_argument("--max-turns", type=int, default=60)
+    ap.add_argument("--step-off", action=argparse.BooleanOptionalAction, default=True,
+                    help="after the mission, step back from the zone for the camera "
+                         "(scored after it)")
     ap.add_argument("--layout", default="showcase", choices=("showcase", "full"),
                     help="the scene: two pieces in front (showcase, default) or all three")
     ap.add_argument("--budget-usd", type=float, default=5.0,
@@ -411,7 +414,11 @@ def main() -> None:
                                     "video": args.video, **spend.as_dict()}) + "\n")
             print(f"[agent] estimated spend this run: {spend.usd:.3f} USD "
                   f"(ledger {LEDGER})")
-    result = {"report": report, "score": score(sim), "sim_s": round(sim.time, 1),
+    mission_s = round(sim.time, 1)
+    if args.video and args.step_off:
+        sim.caption = "(mission over) stepping back from the zone"
+        skills.step_off()
+    result = {"report": report, "score": score(sim), "sim_s": mission_s,
               "spend": spend.as_dict(), "events": transcript.events}
     sim.close()
     print(json.dumps({k: result[k] for k in ("report", "score", "sim_s", "spend")}, indent=2))

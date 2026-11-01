@@ -405,6 +405,17 @@ class Skills:
         self._say("released")
         return "claw opened and arm stowed"
 
+    def step_off(self, metres: float = 0.3) -> None:
+        """After the mission, for the camera: raise the open claw clear of what it
+        released (stepping back with it low dragged a bottle out of the zone), walk
+        back, put the arm back and stand still."""
+        lift = np.array(self.sim.presets[self.carry_pose]) + np.array([0.0, -LIFT_RAD, 0.0, 0.0])
+        self.sim.presets["step_off"] = tuple(float(v) for v in lift)
+        self.sim.arm("step_off", settle=0.4)
+        self.walk(metres, "back")
+        self.sim.arm(self.carry_pose, settle=0.3)
+        self.sim.stand(2.0)
+
     def back_off(self, metres: float = 0.15) -> str:
         return self.walk(metres, "back")
 
