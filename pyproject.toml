@@ -1,7 +1,7 @@
 [project]
 name = "oceanking"
 version = "0.0.1"
-description = "Jumper, a crab robot, walking on the seabed in MuJoCo"
+description = "OceanKing: A Crab, a Crown, and Claude. The Jumper crab robot on the seabed in MuJoCo, trained with RL and driven by Claude"
 requires-python = ">=3.10,<3.14"
 # Simulation dependencies come from upstream Jumper (`jumper/`), installed
 # editable into the same environment; see README.md.

@@ -1,22 +1,36 @@
-# Local machine setup and course material, not part of the project
+# Local machine setup and material that is not part of the project
 /docker.sh
 /prepare.sh
 /archive/
 /theme.pdf
-# Early concept notes, kept locally only
 /docs/PROPOSAL.md
+# Reports and their build (kept outside the repository)
+/report/
 
 # Disposable experiments and outputs: anything here may be deleted at any time
 /scratch/
 
-# Python environment for the whole project (jumper/ is installed into it editable)
+# Python
 /.venv/
+.venv/
 __pycache__/
+*.py[cod]
 *.egg-info/
+.pytest_cache/
+.ruff_cache/
 
+# Simulator and run by-products
 MUJOCO_LOG.TXT
+*.mp4
+!/assets/**/*.mp4
 
-# Secrets (Claude API key for the demo): never committed.
+# Secrets (the Claude API key for the demo): never committed. Copy .env.sample.
 .env
 .env.*
-!.env.example
+!.env.sample
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

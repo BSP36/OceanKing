@@ -69,7 +69,7 @@ def score(npz: Path, target: tuple[float, float]) -> dict:
     s, deg = target
     goal = s * REACH * np.array([math.cos(math.radians(deg)), math.sin(math.radians(deg))])
     # Longest run of airborne samples.
-    best, start, run_start = (0, 0, 0), None, None
+    best, run_start = (0, 0, 0), None
     for i, a in enumerate(np.append(air, False)):
         if a and run_start is None:
             run_start = i
