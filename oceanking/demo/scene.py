@@ -59,9 +59,8 @@ def _register_heights() -> None:
 
     for t in TRASH:
         perception.HEIGHTS[t.name] = 2 * t.half_height
+    perception.FLAT_RADIUS["drop_zone"] = DROP_RADIUS
 
-
-_register_heights()
 
 #: Where things lie, metres from the robot's spawn (origin, facing +x).
 LAYOUT: dict[str, tuple[float, float]] = {
@@ -82,10 +81,19 @@ LAYOUTS: dict[str, dict] = {
 DROP_RADIUS = 0.18
 ZONE_RGBA = (0.95, 0.10, 0.85, 1.0)
 
+_register_heights()
+
 
 #: Sliding friction of the trash: upstream's row's 0.35. 0.8 (fouled trash) was
 #: tried and grasped 2 of 9 against 3-6 of 9 at 0.35 (2026-10-27, small samples).
 TRASH_FRICTION = (0.35, 0.0002, 0.00012)
+#: The bottles' necks, where the claw closes: a rubber grip. Sliding 1.0 and
+#: torsional 0.01 m (a ~1 cm contact patch; the props' 0.0002 is a point). In a
+#: two-jaw pinch the piece pivots about the pinch axis, the contact normal, and only
+#: torsional friction resists it: with the props' values a held bottle swung out of
+#: the claw within seconds of a turn or a walk (2026-11-01). The bodies keep
+#: TRASH_FRICTION, so the approach pushes them as before.
+NECK_FRICTION = (1.0, 0.01, 0.0002)
 
 
 def _trash_spec(t: Trash) -> Any:
@@ -102,7 +110,8 @@ def _trash_spec(t: Trash) -> Any:
                            **look)
         objects._prop_geom(body, name=f"{t.name}_neck", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
                            size=[r_neck, h_neck / 2, 0.0],
-                           pos=[0, 0, bottom + h_body + h_neck / 2], **look)
+                           pos=[0, 0, bottom + h_body + h_neck / 2],
+                           **(look | dict(friction=list(NECK_FRICTION))))
     elif t.kind == "cylinder":
         objects._prop_geom(body, name=t.name, type=mujoco.mjtGeom.mjGEOM_CYLINDER,
                            size=[t.size[0], t.size[1], 0.0], **look)

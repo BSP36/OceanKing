@@ -42,6 +42,42 @@ ARM_PRESETS: dict[str, tuple[float, float, float, float]] = {
 CHECKPOINT_REACH = REPO / "oceanking/tasks/ocean/five_foot/out/reach/model.pt"
 #: Arm joint speed while moving to a preset, rad/s (rl-wbc-fsm's interpolation).
 ARM_RATE = 1.5
+#: The finger torque the policy is shown, N*m: what it saw in training, an empty
+#: claw (upstream `claw.py`: 0.014 +- 0.056 in the normaliser).
+FINGER_TORQUE_SEEN = 0.014
+
+
+def _hide_finger_torque(cfg) -> None:
+    """Show the policy the empty claw's finger torque, whatever the claw squeezes.
+
+    The finger's torque is observed and the policy only ever trained with an empty
+    claw; a squeezed piece saturates the servo (1.2 N*m, ~21 standard deviations
+    out) and the gait comes apart: upstream measured the turn halved, and fed the
+    training value it turned nearly as well as with an empty claw (`claw.py`). In
+    the demo the pieces slipped out 1-3 s into the first turn or walk after the
+    grasp (3 of 3 scripted, 2026-11-01). The grip keeps its full force."""
+    from tasks.jumper.five_foot.claw import FINGER_JOINT
+
+    for group in cfg.observations.values():
+        term = group.terms.get("actuator_force")
+        if term is None:
+            continue
+        func = term.func
+
+        def hidden(env, func=func, **params):
+            out = func(env, **params).clone()
+            asset_cfg = params.get("asset_cfg")
+            asset = env.scene[asset_cfg.name if asset_cfg is not None else "robot"]
+            finger = asset.find_actuators([FINGER_JOINT])[0][0]
+            ids = asset_cfg.actuator_ids if asset_cfg is not None else None
+            if ids is None or isinstance(ids, slice):
+                col = finger
+            else:
+                col = list(ids).index(finger)
+            out[:, col] = FINGER_TORQUE_SEEN
+            return out
+
+        term.func = hidden
 
 
 @dataclass
@@ -54,7 +90,7 @@ class OceanSim:
     def __init__(self, checkpoint: Path | str = CHECKPOINT, *, beta: float = 0.8,
                  current: tuple[float, float] = (0.0, 0.0), scene: str = "seabed",
                  camera_size: tuple[int, int] = (640, 480), presets: dict | None = None,
-                 arm: str = "stow", layout: str = "full"):
+                 arm: str = "stow", layout: str = "full", hide_finger_torque: bool = True):
         import torch
         from mjrl.backend import resolve
         from mjrl.backend.select import use_backend
@@ -74,6 +110,8 @@ class OceanSim:
             "buoyancy_ratio": beta, "current": list(current), "demo_scene": layout, "arm": arm})
         if scene:
             scenes.apply(cfg, scene)
+        if hide_finger_torque:
+            _hide_finger_torque(cfg)
         cfg.scene.num_envs = 1
         cfg.episode_length_s = 1e6  # the demo ends when the agent says so
         self.env = ManagerBasedRlEnv(cfg=cfg, device="cpu")

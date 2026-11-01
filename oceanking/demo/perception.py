@@ -86,6 +86,12 @@ def _mask(h, s, v, hue, smin, vmin) -> np.ndarray:
 #: tens of centimetres -- 0.75 m read for 0.90, 2026-10-27.)
 HEIGHTS: dict[str, float] = {}
 
+#: label -> radius, m, of a flat disk lying on the ground (the drop zone; filled in by
+#: `scene.py`). The lowest pixel of a disk is its near rim, not its centre: the
+#: centre is a radius further along the line of sight. Without this the zone read up
+#: to 0.18 m short and pieces were released on its rim (2026-11-01).
+FLAT_RADIUS: dict[str, float] = {}
+
 
 def ground_point(u: float, v: float, size: tuple[int, int], fovy: float,
                  cam_pos: np.ndarray, cam_mat: np.ndarray, z: float = 0.0) -> np.ndarray | None:
@@ -147,6 +153,10 @@ def detect(rgb: np.ndarray, fovy: float | None = None, cam_pos=None, cam_mat=Non
                     ray = cam_mat @ np.array([((u0 + u1) / 2 - w_ / 2) / f, 0.0, -1.0])
                     rel = math.atan2(ray[1], ray[0]) - robot_pose[2]
                     bearing = math.degrees(math.atan2(math.sin(rel), math.cos(rel)))
+                if g is not None and label in FLAT_RADIUS:
+                    sight = np.asarray(g[:2], float) - np.asarray(cam_pos[:2], float)
+                    g = np.array(g, float)
+                    g[:2] += FLAT_RADIUS[label] * sight / max(np.linalg.norm(sight), 1e-9)
                 if g is not None:
                     x, y, yaw = robot_pose
                     dx, dy = g[0] - x, g[1] - y
@@ -159,4 +169,4 @@ def detect(rgb: np.ndarray, fovy: float | None = None, cam_pos=None, cam_mat=Non
     return out
 
 
-__all__ = ["CLASSES", "Detection", "detect", "ground_point"]
+__all__ = ["CLASSES", "FLAT_RADIUS", "Detection", "detect", "ground_point"]

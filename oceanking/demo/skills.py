@@ -51,6 +51,9 @@ TOLERANCE = 0.012
 GRIP_DEPTH = 0.015
 #: Shoulder lift with a piece in the claw, rad (see `grasp`).
 LIFT_RAD = 0.45
+#: How close the mouth is brought to the drop zone's centre with a load, m (the zone
+#: is 0.18 in radius; the crab walk moves ~4 cm a step).
+CARRY_TOLERANCE = 0.06
 #: The finger closes to `GRIPPER_CLOSED` (0.10 rad) on nothing; on a 50 mm object
 #: it stops well short (measured: about -0.3 rad).
 HOLD_MARGIN = 0.15
@@ -332,6 +335,36 @@ class Skills:
             e = e - np.array([0.0, e[1]])
         return float(np.linalg.norm(e))
 
+    def _crab(self, label: str, offset: np.ndarray, tol: float, timeout: float) -> float:
+        """With a load: walk to put the base-frame point `offset` on `label`'s fix without
+        turning, one axis at a time and continuously (the gait does not do diagonals,
+        and every stop and start shakes the load). Sideways first, like a crab, then
+        forward or back. A turn swung the held piece out of the claw in 2 of 3 trials;
+        sideways and straight walks held it for 6 s in 4 of 4 (2026-11-01). The fix
+        is the remembered one, by odometry, refreshed when the camera sees it whole."""
+        t_end = self.sim.time + timeout
+        err = np.inf
+        sideways = True
+        while self.sim.time < t_end:
+            if label not in self.targets:
+                raise RuntimeError(f"no fix on {label}")
+            e = self.to_base(self.targets[label]) - offset
+            err = float(np.linalg.norm(e))
+            if err < tol:
+                break
+            # Sideways until well lined up; back to sideways only if it drifts out
+            # again, so the two axes do not alternate at the boundary.
+            sideways = abs(e[1]) > (tol / 2 if sideways else tol)
+            if sideways:
+                self.sim.walk(0.0, math.copysign(MAX_SPEED, e[1]), 0.0, PERIOD)
+            else:
+                self.sim.walk(math.copysign(MAX_SPEED, e[0]), 0.0, 0.0, PERIOD)
+            if not self.claw_closed_on_something():
+                break  # dropped: let the caller report it
+            self.detections()
+        self.sim.stand(0.3)
+        return err
+
     def grasp(self) -> str:
         self.sim.claw(closed=True, settle=1.0)
         # Lift from wherever the arm is aimed, by what the arm-out policy was
@@ -382,6 +415,11 @@ class Skills:
             self.walk(0.3, "forward")
         if label not in self.targets:
             return f"cannot go to {label}: it stays without a distance; get closer."
+        if self.held:
+            err = self._crab(label, self.mouth_offset, CARRY_TOLERANCE, timeout=90.0)
+            msg = f"claw over {label}, {err * 100:.0f} cm off its last known position"
+            self._say(msg)
+            return self._check_drop(msg + f", holding the {self.held}")
         # The zone is large and flat: keep refreshing its fix all the way in (the
         # far-only refresh left pieces 0.3-0.4 m short of it, 2026-10-27).
         err = self._servo(label, self.mouth_offset, 0.04, timeout=90.0, track=True,

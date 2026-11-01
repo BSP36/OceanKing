@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 #: Claude Opus 5.5 prices, USD per million tokens: input, cache write (5 min),
@@ -111,8 +113,13 @@ How to work:
 business: a piece can be knocked over or missed. If grasp reports nothing in the claw, \
 `release`, `walk` 0.2 m back, `look`, and try the same piece again (a knocked-over piece may \
 no longer be graspable: then move on to another).
-- With a piece in the claw, find the drop zone (look/turn), `go_to` it, then `release`.
+- Look around for the drop zone early, before grasping, so its position is known.
+- With a piece in the claw, do not turn: `go_to` the drop zone straight away (it walks \
+there sideways like a crab, keeping the load steady; it remembers where the zone was seen), \
+then `release`. Turning with a load can swing it out of the claw; turn only if the zone \
+has never been seen.
 - Tool results warn you when the claw has dropped what it held: look for the piece again.
+- A piece the detector reports as lying in the drop zone is delivered: leave it there.
 - The robot walks slowly (about 0.15 m/s): prefer few, purposeful actions.
 - Call `finish` when the trash you can reach is in the zone, or after about five failed \
 attempts in total, with a one-line report."""
@@ -143,7 +150,8 @@ TOOLS: list[dict[str, Any]] = [
     {"name": "release", "description": "Open the claw and put the arm back.",
      "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "go_to", "description": "Walk until the claw is over the drop zone (it must have "
-     "been seen by look).",
+     "been seen by look at some point; its position is remembered by odometry). With a piece "
+     "in the claw it walks sideways and forward/back without turning.",
      "input_schema": {"type": "object", "properties": {
          "label": {"type": "string", "enum": ["drop_zone"]}},
          "required": ["label"], "additionalProperties": False}},
@@ -172,11 +180,25 @@ class Transcript:
         self.events.append(kw)
 
 
+def _describe(skills, d) -> str:
+    """A detection, marked delivered when its ground fix lies in the drop zone as the robot
+    itself last saw it (a delivered piece was taken for one still to fetch, and knocked
+    out of the zone, 2026-11-01)."""
+    from oceanking.demo.scene import DROP_RADIUS
+
+    text = d.describe()
+    zone = skills.targets.get("drop_zone")
+    if (d.label != "drop_zone" and d.ground is not None and zone is not None
+            and np.linalg.norm(np.asarray(d.ground) - np.asarray(zone)) < DROP_RADIUS):
+        text += " -- lying in the drop zone: already delivered, leave it"
+    return text
+
+
 def run_tool(skills, name: str, args: dict) -> list[dict] | str:
     """Execute one tool; returns tool_result content (a string, or blocks with an image)."""
     if name == "look":
         img, dets = skills.look()
-        text = ("Detections: " + "; ".join(d.describe() for d in dets)) if dets else \
+        text = ("Detections: " + "; ".join(_describe(skills, d) for d in dets)) if dets else \
             "Detections: none of the targets is in view."
         return [{"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                              "data": _png_b64(img)}},
@@ -379,11 +401,11 @@ def main() -> None:
 
 
 def demo_script(label: str = "red_bottle") -> list[tuple[str, dict]]:
-    """What a scripted stand-in does with `--dry-run`: fetch `label` to the zone (the
-    zone lies to the robot's left of every piece's position)."""
-    return [("look", {}), ("approach", {"label": label}), ("grasp", {}),
-            ("turn", {"degrees": 100}), ("look", {}), ("go_to", {"label": "drop_zone"}),
-            ("release", {}), ("status", {})]
+    """What a scripted stand-in does with `--dry-run`: fetch `label` to the zone: find
+    the zone first (it lies to the left), then carry without turning."""
+    return [("look", {}), ("turn", {"degrees": 70}), ("look", {}), ("turn", {"degrees": -70}),
+            ("look", {}), ("approach", {"label": label}), ("grasp", {}),
+            ("go_to", {"label": "drop_zone"}), ("release", {}), ("status", {})]
 
 
 if __name__ == "__main__":
