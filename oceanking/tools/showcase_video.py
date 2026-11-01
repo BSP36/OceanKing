@@ -38,7 +38,8 @@ TRAIL_RGBA = (1.0, 0.85, 0.15, 0.9)
 GHOST_RGBA = (0.2, 1.0, 0.35, 0.55)
 
 
-def _install(current: tuple[float, float], script, jump: bool = False) -> None:
+def _install(current: tuple[float, float], script, jump: bool = False, snow: bool = True,
+             tank_log: str | None = None) -> None:
     import mujoco
     from mjrl.viewer import video
 
@@ -58,6 +59,36 @@ def _install(current: tuple[float, float], script, jump: bool = False) -> None:
                             np.asarray(mat, float), np.asarray(rgba, np.float32))
         g.emission = 0.3
         scn.ngeom += 1
+
+    def _snow(scn, pos, t):
+        """Marine snow: a fixed field of specks advected by the current, wrapped into a
+        box that moves with the robot (so there are always specks around it)."""
+        lo = pos - np.array([BOX / 2, BOX / 2, 0.0])
+        wob = 0.01 * np.stack([np.sin(0.7 * t + phases[:, 0]), np.sin(0.9 * t + phases[:, 1])], 1)
+        p = seeds * np.array([BOX, BOX, SNOW_TOP]) + cur * t
+        p[:, :2] += wob
+        p[:, :2] = lo[:2] + np.mod(p[:, :2] - lo[:2], BOX)
+        p[:, 2] = 0.02 + np.mod(p[:, 2], SNOW_TOP)
+        scn.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = 0
+        for q in p:
+            add(scn, mujoco.mjtGeom.mjGEOM_SPHERE, (0.0045, 0, 0), q, SNOW_RGBA)
+
+    log: list = []
+
+    def _log_tank(env, t, pos):
+        """One row per video frame: time, the tank's air fraction and its target, the
+        robot's beta and the base height (`env.crown_tank`, `oceanking.tank`)."""
+        import json
+
+        from oceanking.water import ocean_state
+
+        tank = getattr(env, "crown_tank", None)
+        row = {"t": t, "z": float(pos[2]), "x": float(pos[0]), "y": float(pos[1])}
+        if tank is not None:
+            row |= {"air": float(tank.air[0]), "target": float(tank.target[0]),
+                    "beta": float(ocean_state(env).beta[0])}
+        log.append(row)
+        Path(tank_log).write_text(json.dumps(log))
 
     def _jump_marks(scn, pos):
         """Take-off ring, the path of the body over the floor, and the touchdown mark.
@@ -120,7 +151,11 @@ def _install(current: tuple[float, float], script, jump: bool = False) -> None:
             state["trail"].append(pos[:2].copy())
 
         scn = r._renderer.scene
+        if tank_log is not None:
+            _log_tank(self._env, t, pos)
         if jump:
+            if snow:
+                _snow(scn, pos, t)
             _jump_marks(scn, pos)
             frame = r.render()
             for _ in range(count):
@@ -129,16 +164,8 @@ def _install(current: tuple[float, float], script, jump: bool = False) -> None:
             return
         # No shadows: the specks' shadows read as dirt on the floor.
         scn.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = 0
-        # Marine snow: a fixed field of specks advected by the current, wrapped into a
-        # box that moves with the robot (so there are always specks around it).
-        lo = pos - np.array([BOX / 2, BOX / 2, 0.0])
-        wob = 0.01 * np.stack([np.sin(0.7 * t + phases[:, 0]), np.sin(0.9 * t + phases[:, 1])], 1)
-        p = seeds * np.array([BOX, BOX, SNOW_TOP]) + cur * t
-        p[:, :2] += wob
-        p[:, :2] = lo[:2] + np.mod(p[:, :2] - lo[:2], BOX)
-        p[:, 2] = 0.02 + np.mod(p[:, 2], SNOW_TOP)
-        for q in p:
-            add(scn, mujoco.mjtGeom.mjGEOM_SPHERE, (0.0045, 0, 0), q, SNOW_RGBA)
+        if snow:
+            _snow(scn, pos, t)
         # Start line, across the start heading.
         st = state["start"]
         add(scn, mujoco.mjtGeom.mjGEOM_BOX, (0.012, 0.35, 0.003), (st[0], st[1], 0.012),
@@ -167,6 +194,9 @@ def main() -> None:
                     help="the command script play.py runs (for the commanded position)")
     ap.add_argument("--jump", action="store_true",
                     help="mark the take-off point, the path and the touchdown instead")
+    ap.add_argument("--no-snow", action="store_true", help="no marine snow")
+    ap.add_argument("--tank-log", default=None,
+                    help="write the crown tank's state per video frame here (JSON)")
     ap.add_argument("play", nargs=argparse.REMAINDER, help="-- then play.py's arguments")
     args = ap.parse_args()
     play = [a for a in args.play if a != "--"]
@@ -175,7 +205,8 @@ def main() -> None:
         script = runpy.run_path(args.command_script)["script"]
         play += ["--command-script", args.command_script]
     sys.path[:0] = [str(Path.cwd() / "scripts"), str(Path.cwd())]
-    _install(tuple(args.current), script, jump=args.jump)
+    _install(tuple(args.current), script, jump=args.jump, snow=not args.no_snow,
+             tank_log=args.tank_log)
     sys.argv = ["scripts/play.py", *play]
     runpy.run_path("scripts/play.py", run_name="__main__")
 
