@@ -156,3 +156,8 @@ upstream/main`.
   [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp).
 - [Claude](https://www.anthropic.com/claude) drives the demo; OceanKing was developed with
   [Claude Code](https://claude.com/claude-code).
+
+## License
+
+[Apache License 2.0](LICENSE), as upstream Jumper. `jumper/` keeps its own [LICENSE](jumper/LICENSE)
+and notices.
