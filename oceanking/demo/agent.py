@@ -96,10 +96,8 @@ def load_key(env_file: Path | None = None) -> None:
 
 SYSTEM = """You are the onboard controller of OceanKing, a six-legged crab robot walking on \
 the seabed. Its left front leg is carried as a claw, held out in front, open. Your mission: \
-collect the sunken trash you can find (a red bottle, a green bottle, a yellow carton) one \
-piece at a \
-time and bring each to the drop zone, a magenta disk with a magenta pole and flag; then call \
-finish.
+collect the sunken trash ({trash}) one piece at a time and bring each to the drop zone, a \
+magenta disk with a magenta pole and flag; then call finish.
 
 What you can sense: `look` returns the onboard camera image (a 96 degree view from the \
 robot's front; the robot's own red body and claw appear at the bottom) and a detector's list \
@@ -121,8 +119,28 @@ has never been seen.
 - Tool results warn you when the claw has dropped what it held: look for the piece again.
 - A piece the detector reports as lying in the drop zone is delivered: leave it there.
 - The robot walks slowly (about 0.15 m/s): prefer few, purposeful actions.
-- Call `finish` when the trash you can reach is in the zone, or after about five failed \
-attempts in total, with a one-line report."""
+- Call `finish` as soon as every piece listed above is in the zone (no need to search \
+further), or after about five failed attempts in total, with a one-line report."""
+
+NAMES = {"red_bottle": "a red bottle", "green_bottle": "a green bottle",
+         "carton": "a yellow carton"}
+
+
+def system_for(labels: list[str]) -> str:
+    """The prompt for the trash this scene holds."""
+    return SYSTEM.format(trash=", ".join(NAMES[x] for x in labels))
+
+
+def tools_for(labels: list[str]) -> list[dict[str, Any]]:
+    """`TOOLS`, with the trash labels this scene holds."""
+    import copy
+
+    tools = copy.deepcopy(TOOLS)
+    for t in tools:
+        props = t["input_schema"].get("properties", {})
+        if "label" in props and "drop_zone" not in props["label"]["enum"]:
+            props["label"]["enum"] = list(labels)
+    return tools
 
 TOOLS: list[dict[str, Any]] = [
     {"name": "look", "description": "Capture the onboard camera image and run the trash/"
@@ -228,11 +246,13 @@ def run_mission(client, skills, *, max_turns: int = 60, effort: str = "medium",
     same `beta.messages.create`). Returns the finish report."""
     transcript = transcript or Transcript()
     spend = spend or Spend(limit_usd=float("inf"))
+    labels = list(getattr(getattr(skills, "sim", None), "trash", None) or NAMES)
+    system, tools = system_for(labels), tools_for(labels)
     messages: list[dict] = [{"role": "user", "content":
                              "Start the mission. The robot is standing still, claw empty."}]
     for turn in range(max_turns):
         response = client.beta.messages.create(
-            model=MODEL, max_tokens=16000, system=SYSTEM, tools=TOOLS, messages=messages,
+            model=MODEL, max_tokens=16000, system=system, tools=tools, messages=messages,
             thinking={"type": "adaptive"}, output_config={"effort": effort},
             betas=[FALLBACK_BETA], fallbacks="default",
             # Every turn resends the history: cache the prefix up to its last block.

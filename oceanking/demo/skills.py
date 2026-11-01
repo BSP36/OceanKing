@@ -54,6 +54,9 @@ LIFT_RAD = 0.45
 #: How close the mouth is brought to the drop zone's centre with a load, m (the zone
 #: is 0.18 in radius; the crab walk moves ~4 cm a step).
 CARRY_TOLERANCE = 0.06
+#: Where each delivered piece is released, m along the robot's line to the zone's
+#: centre: the first beyond it, the second short of it (the zone is 0.18 in radius).
+DROP_SLOTS = (0.08, -0.07, 0.0)
 #: The finger closes to `GRIPPER_CLOSED` (0.10 rad) on nothing; on a 50 mm object
 #: it stops well short (measured: about -0.3 rad).
 HOLD_MARGIN = 0.15
@@ -88,6 +91,8 @@ class Skills:
         self.verbose = verbose
         self.targets: dict[str, tuple[float, float]] = {}  # last ground fix per label
         self.held: str | None = None  # what the last successful grasp picked up
+        self.delivered = 0  # pieces released over the drop zone, as far as the robot knows
+        self._at_zone = False  # the last move ended with a load over the zone
         self._approached: str | None = None
         self._whole: dict[str, bool] = {}
         self.mouth_offset = self._calibrate_mouth()
@@ -335,7 +340,8 @@ class Skills:
             e = e - np.array([0.0, e[1]])
         return float(np.linalg.norm(e))
 
-    def _crab(self, label: str, offset: np.ndarray, tol: float, timeout: float) -> float:
+    def _crab(self, label: str, offset: np.ndarray, tol: float, timeout: float,
+              shift: np.ndarray | None = None) -> float:
         """With a load: walk to put the base-frame point `offset` on `label`'s fix without
         turning, one axis at a time and continuously (the gait does not do diagonals,
         and every stop and start shakes the load). Sideways first, like a crab, then
@@ -348,7 +354,8 @@ class Skills:
         while self.sim.time < t_end:
             if label not in self.targets:
                 raise RuntimeError(f"no fix on {label}")
-            e = self.to_base(self.targets[label]) - offset
+            goal = np.asarray(self.targets[label], float) + (0.0 if shift is None else shift)
+            e = self.to_base(goal) - offset
             err = float(np.linalg.norm(e))
             if err < tol:
                 break
@@ -386,6 +393,9 @@ class Skills:
         return msg
 
     def release(self) -> str:
+        if self.held and self._at_zone:
+            self.delivered += 1
+        self._at_zone = False
         self.sim.arm("reach", settle=0.3)
         self.sim.claw(closed=False, settle=1.0)
         self.sim.arm(self.carry_pose, settle=0.3)
@@ -416,7 +426,19 @@ class Skills:
         if label not in self.targets:
             return f"cannot go to {label}: it stays without a distance; get closer."
         if self.held:
-            err = self._crab(label, self.mouth_offset, CARRY_TOLERANCE, timeout=90.0)
+            t0 = self.sim.time
+            self._say(f"carrying the {self.held} to {label}")
+            # A slot of its own for each piece: the first beyond the centre (seen from
+            # where the robot comes from), the next short of it. Released at the centre,
+            # the second delivery knocked the first out of the zone (4 of 6 real runs,
+            # 2026-11-01).
+            x, y, _ = self.sim.pose()
+            u = np.asarray(self.targets[label], float) - np.array([x, y])
+            u /= max(float(np.linalg.norm(u)), 1e-9)
+            shift = u * DROP_SLOTS[min(self.delivered, len(DROP_SLOTS) - 1)]
+            err = self._crab(label, self.mouth_offset, CARRY_TOLERANCE, timeout=90.0, shift=shift)
+            self._say(f"carry took {self.sim.time - t0:.1f} s")
+            self._at_zone = err < 2 * CARRY_TOLERANCE
             msg = f"claw over {label}, {err * 100:.0f} cm off its last known position"
             self._say(msg)
             return self._check_drop(msg + f", holding the {self.held}")
