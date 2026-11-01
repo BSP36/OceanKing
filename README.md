@@ -1,6 +1,6 @@
 # OceanKing: A Crab, a Crown, and Claude
 
-![OceanKing](assets/oceanking.jpg)
+[![OceanKing: watch the video](assets/oceanking.jpg)](https://www.youtube.com/watch?v=d0wBdI-428E)
 
 **A land robot, sunk to the seabed.** [Jumper](https://github.com/KingKongRobotics/jumper) is an
 open-source 22-DoF crab robot built for walking on land. OceanKing puts it under water in
@@ -10,7 +10,8 @@ in water; gives it a crown that is really a ballast tank; and hands the controls
 [Claude](https://www.anthropic.com/claude), which looks through the robot's own camera and
 collects trash from the seabed.
 
-Everything here is simulation. [The full video (2 min)](assets/video/oceanking.mp4).
+Everything here is simulation. **[Watch the video (2 min) on YouTube](https://www.youtube.com/watch?v=d0wBdI-428E)** (also in
+[`assets/video/`](assets/video/oceanking.mp4)).
 
 | | |
 |---|---|
